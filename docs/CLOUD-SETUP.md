@@ -40,8 +40,22 @@ npx supabase link --project-ref <project-ref>
 npx supabase db push
 ```
 
-迁移会创建：`public.aquariums` 表、RLS 策略、唯一索引 `aquariums_owner_phase_a_uidx`，
-以及三个函数 `ensure_aquarium` / `save_aquarium` / `settle_growth`（外加校验函数 `mofish_state_error`）。
+迁移会创建 `public.aquariums` 表、RLS 只读策略、唯一索引 `aquariums_owner_phase_a_uidx`，
+以及三个**受控写入函数** `ensure_aquarium` / `save_aquarium` / `settle_growth`
+（外加内部校验函数 `mofish_state_error`）。
+
+**权限模型（重要，请勿改成给客户端写表权限）**：
+
+| 角色 | 对 `aquariums` 的权限 | 说明 |
+| --- | --- | --- |
+| `authenticated` | 只有 `SELECT`（受 RLS 限制为本人行） | 没有任何 INSERT/UPDATE/DELETE |
+| `anon` | 无 | 也不能执行任何函数 |
+| 三个写入函数 | `SECURITY DEFINER`，属主是执行迁移的角色 | 内部自行校验 `auth.uid()`、参数与存档结构 |
+| `mofish_state_error` | 不对客户端开放 | 只被上面三个函数内部调用 |
+
+这样做的原因：如果客户端能直接写表，就能绕过函数里的 `revision` 自增、成长锚点与存档校验
+（例如把 `revision` 改成任意值、把 `last_growth_at` 回拨来刷成长）。把写权限收掉之后，
+「冲突检测、服务端校验、成长结算」才是数据库强制的边界，而不是「请前端不要直接调表」的约定。
 
 ### 1.3 配置认证（Authentication）
 
@@ -101,7 +115,21 @@ node scripts/cloud-smoke.mjs
 幂等成长结算 → 服务端拒绝非法存档，并在结束时清理它创建的测试账号。
 没有 service_role key 时，也可以提供两个已确认邮箱的账号（见脚本头部注释）。
 
-### 2.2 人工验证（两台设备）
+### 2.2 并发测试（两个真实数据库连接）
+
+成长结算必须防并发重复奖励，这一点无法用单连接的内核验证，需要真实的多连接 Postgres：
+
+```sh
+npm run test:concurrency
+```
+
+- 默认会尝试用 `optionalDependencies` 里的 `embedded-postgres` 起一个本地实例
+  （数据目录在系统临时目录，测试结束后关闭；约 145MB 平台二进制，装不上也不影响 `npm install`）。
+- 也可以指向现有 Postgres：`MOFISH_TEST_PG_URL=postgresql://postgres:postgres@127.0.0.1:5432/postgres npm run test:concurrency`
+  （需要能建角色/表；测试会自行创建 `anon`/`authenticated` 角色来模拟 Supabase）。
+- 两者都不可用时用例会明确标 SKIP 并说明原因，不会被当成通过。
+
+### 2.3 人工验证（两台设备）
 
 1. 设备 A 打开站点 → 右上「登录 / 注册」→ 注册 → 收邮件点验证链接 → 登录，状态显示「已同步」。
 2. 设备 A 给鱼改名、喂几条、种水草。
@@ -152,8 +180,11 @@ psql "postgresql://.../postgres" -c "\copy (select * from public.aquariums) to '
 
 ## 4. 安全说明
 
-- **公开 key 会出现在网页里**，这是设计如此：真正的边界是 RLS。所有数据库访问都必须经过
-  `auth.uid()` 判断，越权请求在数据库层被拒绝（含 RPC 内部的身份与参数校验）。
+- **公开 key 会出现在网页里**，这是设计如此：真正的边界是数据库权限与 RLS。客户端**没有任何表级写权限**，
+  所有写入只能经过三个 `SECURITY DEFINER` 函数；函数内部按 `auth.uid()` 过滤归属并做参数/结构校验，
+  越权请求在数据库层被拒绝。
+- **邮件回调**：验证/重置链接把令牌放在 URL 片段里，前端读取后立刻 `history.replaceState` 清除；
+  并且必须先用 `GET /auth/v1/user` 确认身份才落盘会话——否则会出现「界面显示已登录、同步引擎却是游客」的错位。
 - **会话令牌保存在 localStorage**（与 Supabase 官方 SDK 的默认行为一致）。代价是：一旦页面被注入
   恶意脚本，令牌可能被读走。缓解措施：`web/_headers` 里的 CSP 只允许同源脚本
   （`script-src 'self'`），前端不使用 `innerHTML` 写入用户输入，也没有第三方脚本。
@@ -170,14 +201,16 @@ psql "postgresql://.../postgres" -c "\copy (select * from public.aquariums) to '
 | 状态显示「未连接云端」 | 没配 `dist/config.js`，或 key 格式不被识别。重新执行 1.4 的构建命令 |
 | 登录报「接口不存在 / 云服务接口不可用」 | 迁移没应用（RPC 不存在）或项目地址写错。执行 1.2 |
 | 注册后收不到邮件 | 未配 SMTP 或超出默认发信频率限制，见 1.3；先看垃圾箱 |
-| 点邮件链接回到首页但没有登录 | Redirect URLs 白名单里没有当前域名，见 1.3；本项目使用 implicit 流程 |
-| 一直「同步中」 | 看 DevTools Network：401 → 会话失效需重新登录；404 → 迁移缺失；跨域报错 → CSP 的 `connect-src` 是否包含你的项目域名 |
+| 点邮件链接回到首页但没有登录 | Redirect URLs 白名单里没有当前域名，见 1.3；确认链接是**新开文档**（只改 hash 的导航不会触发回调处理） |
+| 一直「同步中」 | 看 DevTools Network：401 → 会话失效需重新登录；404 → 迁移缺失；403 + `permission denied for table aquariums` → 迁移没跑完整（写权限收回后表级写必须报这个错，属预期）；跨域报错 → CSP 的 `connect-src` 是否包含你的项目域名 |
+| 存档写不进去、返回 `invalid_state` | 服务端校验比前端严（缺字段/重复鱼 id/越界值都会被拒）。先导出存档对照字段，不要放宽服务端校验 |
 | 部署后样式/脚本没更新 | Service Worker 已缓存旧静态资源；本地开发可在 DevTools → Application → Service Workers 里 unregister，线上刷新两次即可 |
 
 ## 6. 本阶段未验证的部分（不要当成已完成）
 
 - **真实 Supabase 项目联调**：本轮没有云账号，`npm run test:cloud`（`scripts/cloud-smoke.mjs`）
-  已写好但**尚未执行过**；数据库侧的 RLS/冲突/幂等只用本机真实 Postgres 引擎（PGlite）验证过。
+  已写好但**从未执行过**；数据库侧的权限模型、RLS、冲突与幂等结算用**本机真实 Postgres 引擎**
+  （PGlite 内核 + `embedded-postgres` 多连接）验证过，但那不等于 Supabase 线上验证。
 - **真实发信**：验证邮件与重置邮件的实际投递、模板与跳转未在真机邮箱验证。
 - **Cloudflare 线上部署**：`_headers`（含 CSP）只在本地预览服务器上验证过，未在 Cloudflare 上实测。
 - **真机浏览器**：iOS Safari / Android Chrome 未实测（本轮为 Chrome headless + 真实视口仿真）。

@@ -4,7 +4,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSyncEngine, STATUS, CONFLICT_REASON, applyGrowthDelta } from '../web/cloud/sync.js';
+import { createSyncEngine, STATUS, CONFLICT_REASON } from '../web/cloud/sync.js';
 import { createCloudStack } from '../web/cloud/client.js';
 import { createLocalStore, keys } from '../web/storage.js';
 import { initial, validate, canonicalState } from '../web/model.js';
@@ -28,7 +28,7 @@ function tank(name, extra = {}) {
   return Object.assign(state, extra);
 }
 
-function createHarness({ configured = true, debounceMs = DEBOUNCE, startMs = START, overrides = {}, fake = createFakeSupabase({ startMs }) } = {}) {
+function createHarness({ configured = true, debounceMs = DEBOUNCE, startMs = START, overrides = {}, gate = null, fake = createFakeSupabase({ startMs }) } = {}) {
   let nowMs = startMs;
   let online = true;
   const raw = createMemoryStorage();
@@ -48,8 +48,10 @@ function createHarness({ configured = true, debounceMs = DEBOUNCE, startMs = STA
   };
 
   const fetchImpl = createFakeFetch(fake, {
-    onRequest: (ctx) => {
+    // gate：测试用来卡住某个请求的响应（模拟「响应晚到」），验证会话代次是否生效。
+    onRequest: async (ctx) => {
       requests.push({ path: ctx.path, body: ctx.body });
+      if (gate) await gate(ctx);
       const override = overrideFor(ctx);
       if (override) return override;
       if (!online) throw new TypeError('offline');
@@ -183,6 +185,7 @@ test('两台设备同 revision：只有先写入的成功，后者拿到冲突�
 
   // 两台设备的 revision 相同
   assert.equal(deviceA.engine.snapshot.revision, deviceB.engine.snapshot.revision);
+  const deviceBBaseRevision = deviceB.engine.snapshot.baseRevision;
 
   deviceA.current.fish[0].name = 'A 改的';
   deviceA.engine.markDirty();
@@ -207,7 +210,11 @@ test('两台设备同 revision：只有先写入的成功，后者拿到冲突�
   const aquariumId = deviceB.engine.snapshot.aquariumId;
   const pending = deviceB.store.readPending(uid, aquariumId);
   assert.ok(pending, '本机未同步副本必须保留');
-  assert.equal(pending.fish[0].name, 'B 改的');
+  assert.equal(pending.state.fish[0].name, 'B 改的');
+  assert.equal(Number(pending.baseRevision), deviceBBaseRevision,
+    '未同步副本必须记下它基于哪个 revision（这里是 B 本地那份的基线，而不是云端最新版本）');
+  assert.ok(Number(pending.baseRevision) < Number(serverRevisionAfterA),
+    '基线比云端最新版本旧，恢复时才能据此判断云端被改过');
 });
 
 test('冲突处理：选择保留本机 → 以最新 revision 重试并成功', async () => {
@@ -389,7 +396,7 @@ test('离线：改动留在本机，状态显示离线；重连后自动写入',
   assert.equal(h.lastStatus, STATUS.OFFLINE);
   const uid = session.session.user.id;
   const aquariumId = h.engine.snapshot.aquariumId;
-  assert.equal(h.store.readPending(uid, aquariumId).fish[0].name, '离线时改的');
+  assert.equal(h.store.readPending(uid, aquariumId).state.fish[0].name, '离线时改的');
 
   h.setOnline(true);
   h.engine.handleOnline();
@@ -420,7 +427,7 @@ test('服务端 5xx：不丢档，保留待同步并显示失败', async () => {
 
   const uid = session.session.user.id;
   const aquariumId = h.engine.snapshot.aquariumId;
-  assert.equal(h.store.readPending(uid, aquariumId).fish[0].name, '服务端挂了');
+  assert.equal(h.store.readPending(uid, aquariumId).state.fish[0].name, '服务端挂了');
 
   failing.value = false;
   const res = await h.engine.syncNow({ reason: 'retry' });
@@ -524,14 +531,11 @@ test('本机有未同步改动时，服务端成长增量只记一次并保留�
   assert.equal(h.store.readPending(uid, aquariumId), null);
 });
 
-test('applyGrowthDelta 与服务端速率一致并做上下限裁剪', () => {
-  const state = tank('x');
-  state.fish[0].growth = 0.99;
-  state.fish[1].growth = 0.5;
-  const grown = applyGrowthDelta(state, 7200);
-  assert.equal(grown.fish[0].growth, 1, '不超过 1');
-  assert.equal(grown.fish[1].growth, 0.516);
-  assert.equal(applyGrowthDelta(state, 0).fish[1].growth, 0.5, '0 秒不变');
+test('成长只由服务端结算，客户端不再做增量记账（顺序改为先写后结算）', async () => {
+  // 旧实现会在本地把服务端的 credited_seconds 增量补算一遍；现在改为
+  // 「先上传本机改动 → 再调用 settle_growth」，因此不需要也不应该存在客户端记账函数。
+  const syncModule = await import('../web/cloud/sync.js');
+  assert.equal(syncModule.applyGrowthDelta, undefined, '客户端记账函数应当已被移除，避免与服务端重复计算');
 });
 
 // ------------------------------------------------------------------ 账号隔离
@@ -652,4 +656,217 @@ test('__proto__ 之类的恶意键名不会污染原型链（存档按字面键�
   assert.equal(store.readAccountState('__proto__', 'constructor').fish[0].name, 'x');
   assert.ok(raw.rawKeys().every(k => k.startsWith('mofish.')));
   assert.equal({}.polluted, undefined);
+});
+
+// ------------------------------------------------------------------ 第二轮评审的回归测试
+
+/** 模拟「重新打开页面」：同一份本机存储 + 新的内存状态 + 新的引擎。 */
+function reopened({ stack, store, onStatus = () => {} }) {
+  const holder = { current: tank('陌生的小满') };
+  const engine = createSyncEngine({
+    api: stack.api,
+    store,
+    getState: () => holder.current,
+    setState: (next) => { holder.current = next; },
+    initialState: () => tank('新缸'),
+    onStatus
+  });
+  return { engine, holder };
+}
+
+test('[P1-1] 重连（syncNow）不会绕过冲突去覆盖另一台设备已经提交的改动', async () => {
+  // 这是评审给出的复现路径：A 已保存改名，B 改了水草后重连，
+  // 旧实现会拿结算返回的新 revision 上传 B 的旧快照 → A 的名字被还原且界面显示「已同步」。
+  const [deviceA, deviceB] = makeDevices(2);
+  const sessionA = await deviceA.register();
+  await deviceA.engine.setSession(sessionA.session);
+  deviceA.current.fish[0].name = '初始';
+  deviceA.engine.markDirty(); await deviceA.runTimers(); await Promise.resolve();
+
+  const sessionB = await deviceB.stack.auth.signIn({ email: 'me@example.com', password: 'goodpassword' });
+  await deviceB.engine.setSession(sessionB.session);
+
+  deviceA.current.fish[0].name = 'A 改的';
+  deviceA.engine.markDirty(); await deviceA.runTimers(); await Promise.resolve();
+  const serverAfterA = [...deviceA.fake.aquariums.values()][0];
+  assert.equal(serverAfterA.state.fish[0].name, 'A 改的');
+
+  // B 改水草（尚未上传），然后「重连」触发 syncNow
+  deviceB.current.plants = 7;
+  const outcome = await deviceB.engine.syncNow({ reason: 'reconnect' });
+
+  assert.equal(deviceB.lastStatus, STATUS.CONFLICT, '必须判定为冲突，而不是假装已同步');
+  assert.equal(outcome.skipped, undefined);
+  const serverNow = [...deviceB.fake.aquariums.values()][0];
+  assert.equal(serverNow.state.fish[0].name, 'A 改的', 'A 的改动绝不能被 B 的旧快照覆盖');
+  assert.equal(serverNow.state.plants, 3, 'B 未同步的水草改动没有偷偷写上去');
+  assert.equal(deviceB.current.plants, 7, 'B 的本机改动仍然保留');
+
+  const uid = sessionB.session.user.id;
+  const pending = deviceB.store.readPending(uid, deviceB.engine.snapshot.aquariumId);
+  assert.ok(pending, '未同步副本必须保留');
+  assert.equal(pending.state.plants, 7);
+});
+
+test('[P1-2] 本机已落盘但未上传的改动：重新打开页面后仍会上传，而不是被云端回退', async () => {
+  const h = createHarness();
+  const session = await h.register();
+  await h.engine.setSession(session.session);
+  const uid = session.session.user.id;
+  const aquariumId = h.engine.snapshot.aquariumId;
+
+  // 用户改了水草；本机落盘（例如切后台 / 关页前，没有走完网络写入）
+  h.current.plants = 7;
+  assert.equal(h.engine.persistLocal(), true);
+  const pending = h.store.readPending(uid, aquariumId);
+  assert.ok(pending, '落盘时必须同时写下未同步副本');
+  assert.equal(pending.state.plants, 7);
+  assert.equal(Number(pending.baseRevision), h.engine.snapshot.baseRevision, '未同步副本必须带上基线 revision');
+
+  // 重新打开页面：同一份存储，新的引擎与新内存状态
+  const store2 = createLocalStore(h.raw);
+  const { engine: engine2, holder } = reopened({ stack: h.stack, store: store2 });
+  const res = await engine2.setSession(session.session);
+  assert.equal(res.ok, true, `重新对账应成功，实际 ${JSON.stringify(res.result || res)}`);
+  assert.equal(holder.current.plants, 7, '本机已保存的水草数量不能被云端回退成 3');
+  assert.equal([...h.fake.aquariums.values()][0].state.plants, 7, '本机改动最终写入云端');
+  assert.equal(store2.readPending(uid, aquariumId), null, '上传成功后清掉未同步副本');
+});
+
+test('[P1-2] 本机未同步改动遇上云端已变更：给出冲突而不是静默丢弃', async () => {
+  const [deviceA, deviceB] = makeDevices(2);
+  const sessionA = await deviceA.register();
+  await deviceA.engine.setSession(sessionA.session);
+  const sessionB = await deviceB.stack.auth.signIn({ email: 'me@example.com', password: 'goodpassword' });
+  await deviceB.engine.setSession(sessionB.session);
+  const uidB = sessionB.session.user.id;
+  const aquariumIdB = deviceB.engine.snapshot.aquariumId;
+
+  // B 落了本机改动但没上传
+  deviceB.current.plants = 7;
+  deviceB.engine.persistLocal();
+
+  // 期间 A 改了名字并成功写入（云端 revision 前进）
+  deviceA.current.fish[0].name = 'A 又改了';
+  deviceA.engine.markDirty(); await deviceA.runTimers(); await Promise.resolve();
+
+  // B 重新打开页面
+  const store2 = createLocalStore(deviceB.raw);
+  const { engine: engine2, holder } = reopened({ stack: deviceB.stack, store: store2 });
+  const res = await engine2.setSession(sessionB.session);
+
+  assert.equal(engine2.status, STATUS.CONFLICT, '云端被改过时必须交给用户选择');
+  assert.equal(res.conflict.reason, CONFLICT_REASON.PENDING);
+  assert.equal(holder.current.plants, 7, 'B 的本机改动仍在内存里');
+  const serverNow = [...deviceB.fake.aquariums.values()][0];
+  assert.equal(serverNow.state.fish[0].name, 'A 又改了', 'A 的改动没有被覆盖');
+  assert.equal(serverNow.state.plants, 3, 'B 的水草没有偷偷写上去');
+  assert.ok(store2.readPending(uidB, aquariumIdB), '未同步副本保留，可导出');
+
+  // 用户选择用本机覆盖云端后，两份内容都能在界面上看到
+  const detail = engine2.conflictDetail();
+  assert.equal(detail.cloudKnown, true);
+  assert.equal(detail.cloudFish[0].name, 'A 又改了');
+  assert.equal(detail.localFish[0].name, '小满');
+});
+
+test('[P1-3] 换号后旧会话的响应必须被丢弃，不得写进新账号的界面与缓存', async () => {
+  const fake = createFakeSupabase({ startMs: START });
+  let release;
+  const blocker = new Promise((resolve) => { release = resolve; });
+  let holdNextSave = true;
+  const h = createHarness({
+    fake,
+    gate: async (ctx) => {
+      if (holdNextSave && ctx.path.endsWith('save_aquarium')) { holdNextSave = false; await blocker; }
+    }
+  });
+
+  const sessionA = await h.register('alice@example.com');
+  await h.engine.setSession(sessionA.session);
+  const uidA = sessionA.session.user.id;
+  const aquariumIdA = h.engine.snapshot.aquariumId;
+
+  // A 有改动 → 发起写入，但响应被卡在半路
+  h.current.fish[0].name = 'A 的名字';
+  const heldSave = h.engine.flush({ reason: 'test' });
+
+  // 期间换成 B 登录（B 有自己的鱼缸与缓存）
+  const sessionB = await h.register('bob@example.com');
+  await h.engine.setSession(sessionB.session);
+  const uidB = sessionB.session.user.id;
+  const aquariumIdB = h.engine.snapshot.aquariumId;
+  assert.notEqual(aquariumIdB, aquariumIdA, 'B 有自己的鱼缸');
+  const bStateBefore = JSON.stringify(h.current);
+  const bCacheBefore = JSON.stringify(h.store.readAccountState(uidB, aquariumIdB));
+
+  release();
+  const result = await heldSave;
+
+  assert.equal(result.skipped, 'stale', '过期响应必须被识别并丢弃');
+  assert.equal(JSON.stringify(h.current), bStateBefore, 'B 的内存状态不能被 A 的响应改写');
+  assert.equal(JSON.stringify(h.store.readAccountState(uidB, aquariumIdB)), bCacheBefore,
+    'B 的缓存键里绝不能出现 A 的数据');
+
+  // A 那次写入本身是成功的（数据不丢），只是客户端不再把响应写回界面/缓存；
+  // 下次 A 登录对账时会从云端取回自己的改动。
+  assert.equal(h.fake.aquariums.get(uidA).state.fish[0].name, 'A 的名字',
+    'A 的写入在服务端生效（假后端里 aquariums 以 ownerId 为键）');
+  assert.notEqual(h.store.readAccountState(uidA, aquariumIdA)?.fish?.[0]?.name, 'B 的水草',
+    'A 的缓存键更不会被 B 的数据污染');
+  assert.equal(h.engine.snapshot.user.id, uidB, '当前用户仍然是 B');
+  assert.equal(h.engine.status, STATUS.SYNCED, 'B 自己的同步状态不受影响');
+});
+
+test('[P1-3] 退出登录后到达的响应不会把登录状态写回界面', async () => {
+  const fake = createFakeSupabase({ startMs: START });
+  let release;
+  const blocker = new Promise((resolve) => { release = resolve; });
+  let holdNextSave = true;
+  const h = createHarness({
+    fake,
+    gate: async (ctx) => {
+      if (holdNextSave && ctx.path.endsWith('save_aquarium')) { holdNextSave = false; await blocker; }
+    }
+  });
+
+  const session = await h.register();
+  await h.engine.setSession(session.session);
+  h.current.plants = 6;
+  const heldSave = h.engine.flush({ reason: 'test' });
+
+  await h.engine.setSession(null);
+  assert.equal(h.engine.mode, 'guest');
+
+  release();
+  const result = await heldSave;
+  assert.equal(result.skipped, 'stale');
+  assert.equal(h.engine.mode, 'guest', '退出后仍然是游客模式');
+  assert.equal(h.engine.status, STATUS.GUEST, '过期响应不得把状态改成已同步');
+});
+
+test('[P1-1] 同步顺序固定为「先上传本机改动 → 再结算服务端成长」', async () => {
+  const h = createHarness();
+  const session = await h.register();
+  await h.engine.setSession(session.session);
+  h.requests.length = 0;
+
+  h.advance(3_600_000);            // 服务端时间前进 1 小时
+  h.current.plants = 5;            // 本机有未同步改动
+  await h.engine.syncNow({ reason: 'test' });
+
+  const order = h.requests.map(r => r.path.split('/').pop()).filter(p => p === 'save_aquarium' || p === 'settle_growth');
+  const saveIndex = order.indexOf('save_aquarium');
+  const settleIndex = order.indexOf('settle_growth');
+  assert.ok(saveIndex >= 0 && settleIndex >= 0, `两种请求都应发出，实际 ${order.join(' → ')}`);
+  assert.ok(saveIndex < settleIndex, `必须先写后结算，实际 ${order.join(' → ')}`);
+
+  const row = [...h.fake.aquariums.values()][0];
+  assert.equal(row.state.plants, 5, '本机改动写入云端');
+  assert.ok(Math.abs(row.state.fish[0].growth - 0.008) < 1e-6,
+    `离线 1 小时应结算一次 +0.008，实际 ${row.state.fish[0].growth}`);
+  assert.equal(h.current.plants, 5);
+  assert.ok(Math.abs(h.current.fish[0].growth - 0.008) < 1e-6,
+    `本机采纳的成长不能重复计算，实际 ${h.current.fish[0].growth}`);
+  assert.equal(h.lastStatus, STATUS.SYNCED);
 });

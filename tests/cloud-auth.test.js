@@ -95,11 +95,18 @@ test('邮件回调参数解析：会话 / 错误 / PKCE 三种情形', () => {
 });
 
 test('会话过期判定带 60 秒提前量', () => {
-  const session = normalizeSession({ access_token: 't', expires_in: 3600 }, 1_000_000_000_000);
+  const session = normalizeSession({ access_token: 't', expires_in: 3600, user: { id: 'u1', email: 'a@example.com' } }, 1_000_000_000_000);
   assert.equal(session.expires_at, 1_000_003_600);
   assert.equal(sessionIsFresh(session, 1_000_000_000_000 + 3_500_000), true);
   assert.equal(sessionIsFresh(session, 1_000_000_000_000 + 3_570_000), false, '剩不到 60 秒即视为过期');
   assert.equal(sessionIsFresh(null, 1_000_000_000_000), false);
+});
+
+test('缺少 user.id 的响应不算有效会话（否则界面会假装已登录）', () => {
+  assert.equal(normalizeSession({ access_token: 't', expires_in: 3600 }, 0), null, '邮件回调只有令牌时不得直接当会话');
+  assert.equal(normalizeSession({ access_token: 't', user: { email: 'a@example.com' } }, 0), null);
+  assert.equal(normalizeSession({ access_token: 't', user: { id: '   ' } }, 0), null);
+  assert.ok(normalizeSession({ access_token: 't', user: { id: 'u1' } }, 0));
 });
 
 // ----------------------------------------------------------------- 真实请求流
@@ -243,17 +250,95 @@ test('重置/改密：可用回调带回的令牌设置新密码，然后能用�
   assert.ok(store.readSession());
 });
 
-test('邮件回调会话可被接受并落盘；无会话时改密给出明确提示', async () => {
-  const { auth, store } = setup();
-  const callback = parseAuthCallback({ hash: '#access_token=fromemail&refresh_token=r1&type=recovery&expires_in=3600' });
-  const accepted = auth.acceptCallbackSession(callback);
-  assert.equal(accepted.ok, true);
-  assert.equal(store.readSession().access_token, 'fromemail');
+test('邮件回调：必须先取回用户身份才算登录；无效令牌不落盘', async () => {
+  const { auth, fake, store } = setup();
+  const user = await registerConfirmed(fake, auth);
+  const signedIn = await auth.signIn({ email: 'a@example.com', password: 'goodpassword' });
+  const token = signedIn.session.access_token;
+
+  store.clearSession();
+  const callback = parseAuthCallback({ hash: `#access_token=${token}&refresh_token=r1&type=recovery&expires_in=3600` });
+  const accepted = await auth.acceptCallbackSession(callback);
+  assert.equal(accepted.ok, true, '带有效令牌的回调应被接受');
+  assert.equal(accepted.session.user.id, user.id, '会话必须带上真实用户 id');
+  assert.equal(accepted.session.user.email, 'a@example.com');
+  assert.equal(store.readSession().access_token, token);
+
+  // 无效令牌：不能落盘、也不能声称已登录
+  const fresh = createLocalStore(createMemoryStorage());
+  const other = createAuthClient({ url: 'https://demo.supabase.co', anonKey: ANON, fetchImpl: createFakeFetch(fake), store: fresh });
+  const bad = await other.acceptCallbackSession(parseAuthCallback({ hash: '#access_token=not-a-real-token&type=signup' }));
+  assert.equal(bad.ok, false);
+  assert.equal(fresh.readSession(), null, '无效链接不得写入会话');
 
   const noSession = createAuthClient({ url: 'https://demo.supabase.co', anonKey: ANON, fetchImpl: networkFailure(), store: createLocalStore(createMemoryStorage()) });
   const res = await noSession.updatePassword('whatever123');
   assert.equal(res.ok, false);
   assert.equal(res.error.code, 'no_session');
+});
+
+test('刷新失败要区分「凭据失效」与「暂时连不上」（评审 P2-8）', async () => {
+  // 情形一：refresh token 真的失效 → 清会话
+  const { auth, fake, store, advance } = setup();
+  await registerConfirmed(fake, auth);
+  await auth.signIn({ email: 'a@example.com', password: 'goodpassword' });
+  advance(3_600_000);
+
+  const invalid = createAuthClient({
+    url: 'https://demo.supabase.co',
+    anonKey: ANON,
+    fetchImpl: createFakeFetch(fake, {
+      onRequest: ({ path }) => (path === '/auth/v1/token'
+        ? { ok: false, status: 400, async text() { return JSON.stringify({ error_code: 'refresh_token_not_found', msg: 'Invalid Refresh Token' }); } }
+        : null)
+    }),
+    store,
+    now: () => Date.now() + 3_600_000
+  });
+  const invalidResult = await invalid.getSession();
+  assert.equal(invalidResult.ok, false);
+  assert.equal(invalidResult.reason, 'invalid_grant');
+  assert.equal(store.readSession(), null, '凭据确实失效时才清除会话');
+
+  // 情形二：断网 → 保留会话与凭据，只报告可重试的离线状态
+  const offlineStore = createLocalStore(createMemoryStorage());
+  const offlineAuth = createAuthClient({
+    url: 'https://demo.supabase.co',
+    anonKey: ANON,
+    fetchImpl: createFakeFetch(fake),
+    store: offlineStore,
+    now: () => Date.now()
+  });
+  await registerConfirmed(fake, offlineAuth);
+  await offlineAuth.signIn({ email: 'a@example.com', password: 'goodpassword' });
+  const offline = createAuthClient({
+    url: 'https://demo.supabase.co',
+    anonKey: ANON,
+    fetchImpl: networkFailure('offline'),
+    store: offlineStore,
+    now: () => Date.now() + 3_600_000
+  });
+  const offlineResult = await offline.getSession();
+  assert.equal(offlineResult.ok, false);
+  assert.equal(offlineResult.reason, 'offline');
+  assert.ok(offlineResult.session, '断网时必须保留会话对象');
+  assert.ok(offlineStore.readSession(), '断网时不得清除本机凭据');
+
+  // 情形三：服务端 5xx → 同样保留
+  const serverStore = createLocalStore(createMemoryStorage());
+  const serverAuth = createAuthClient({ url: 'https://demo.supabase.co', anonKey: ANON, fetchImpl: createFakeFetch(fake), store: serverStore, now: () => Date.now() });
+  await registerConfirmed(fake, serverAuth);
+  await serverAuth.signIn({ email: 'a@example.com', password: 'goodpassword' });
+  const down = createAuthClient({
+    url: 'https://demo.supabase.co',
+    anonKey: ANON,
+    fetchImpl: async () => ({ ok: false, status: 503, async text() { return '{}'; } }),
+    store: serverStore,
+    now: () => Date.now() + 3_600_000
+  });
+  const downResult = await down.getSession();
+  assert.equal(downResult.reason, 'offline');
+  assert.ok(serverStore.readSession(), '服务端临时故障时不得清除凭据');
 });
 
 test('网络不可达时给出网络类错误而不是“密码错误”', async () => {

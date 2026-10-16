@@ -27,18 +27,52 @@ const GROWTH_PER_HOUR = 0.008;
 
 /** 与 public.mofish_state_error 对应的最小子集（前端用例只需要区分「合法/不合法」）。 */
 export function validateState(state) {
-  if (!state || typeof state !== 'object' || Array.isArray(state)) return 'state_not_object';
+  // 与 supabase/migrations 里的 mofish_state_error 保持同一套判定（含「缺失字段」与重复 id）。
+  // 假后端只是替身，但边界必须一致，否则端到端测试会放过真实服务端会拒绝的存档。
+  if (state === undefined || state === null) return 'state_missing';
+  if (typeof state !== 'object' || Array.isArray(state)) return 'state_not_object';
+  if (!('version' in state)) return 'version_missing';
+  if (typeof state.version !== 'number') return 'version_not_number';
   if (state.version !== 1) return 'unsupported_state_version';
+  if (!('fish' in state)) return 'fish_missing';
   if (!Array.isArray(state.fish)) return 'fish_not_array';
   if (state.fish.length < 1) return 'fish_count_below_min';
   if (state.fish.length > 12) return 'fish_count_above_max';
-  if (typeof state.plants !== 'number' || state.plants < 0 || state.plants > 8) return 'plants_out_of_range';
+  if (!('plants' in state)) return 'plants_missing';
+  if (typeof state.plants !== 'number') return 'plants_not_number';
+  if (!Number.isInteger(state.plants) || state.plants < 0 || state.plants > 8) return 'plants_out_of_range';
+  if (!('night' in state)) return 'night_missing';
+  if (typeof state.night !== 'boolean') return 'night_not_boolean';
+  if (!('sound' in state)) return 'sound_missing';
+  if (typeof state.sound !== 'boolean') return 'sound_not_boolean';
+  if (!('savedAt' in state)) return 'saved_at_missing';
+  if (typeof state.savedAt !== 'number') return 'saved_at_not_number';
+  if (state.savedAt < 0 || state.savedAt > 4102444800000) return 'saved_at_out_of_range';
+
+  const ids = new Set();
   for (const f of state.fish) {
-    if (!f || typeof f.id !== 'string' || !f.id) return 'fish_id_invalid';
+    if (!f || typeof f !== 'object' || Array.isArray(f)) return 'fish_not_object';
+    if (!('id' in f)) return 'fish_id_missing';
+    if (typeof f.id !== 'string' || f.id.length < 1 || f.id.length > 100) return 'fish_id_invalid';
+    if (ids.has(f.id)) return 'fish_id_duplicated';
+    ids.add(f.id);
+    if (!('name' in f)) return 'fish_name_missing';
     if (typeof f.name !== 'string' || f.name.length > 16) return 'fish_name_invalid';
-    if (typeof f.growth !== 'number' || f.growth < 0 || f.growth > 1) return 'fish_growth_out_of_range';
-    if (typeof f.meals !== 'number' || f.meals < 0) return 'fish_meals_out_of_range';
+    if (!('species' in f)) return 'fish_species_missing';
+    if (typeof f.species !== 'number') return 'fish_species_invalid';
+    if (!Number.isInteger(f.species) || f.species < 0 || f.species > 3) return 'fish_species_out_of_range';
+    if (!('born' in f)) return 'fish_born_missing';
+    if (typeof f.born !== 'number') return 'fish_born_invalid';
+    if (f.born < 0 || f.born > 4102444800000) return 'fish_born_out_of_range';
+    if (!('growth' in f)) return 'fish_growth_missing';
+    if (typeof f.growth !== 'number') return 'fish_growth_invalid';
+    if (f.growth < 0 || f.growth > 1) return 'fish_growth_out_of_range';
+    if (!('meals' in f)) return 'fish_meals_missing';
+    if (typeof f.meals !== 'number') return 'fish_meals_invalid';
+    if (!Number.isInteger(f.meals) || f.meals < 0 || f.meals > 1000000) return 'fish_meals_out_of_range';
   }
+
+  if (JSON.stringify(state).length > 32768) return 'state_too_large';
   return null;
 }
 

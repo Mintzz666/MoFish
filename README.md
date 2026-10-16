@@ -15,6 +15,7 @@ npm test          # 逻辑与同步单元测试（含真实 Postgres 引擎上�
 npm run build     # 生成 dist/
 npm run preview   # 服务 dist/ 并应用 _headers（含 CSP），用于部署前自检
 npm run test:e2e  # 浏览器端到端（需要本机 Chrome；用本地假后端模拟云服务）
+npm run test:concurrency   # 成长结算的真实多连接并发测试（需要真实 Postgres，见 docs/CLOUD-SETUP.md）
 ```
 
 `dist/` 可部署至 Cloudflare Workers 静态资源、GitHub Pages 或任意 HTTPS 静态托管。无需常驻应用服务器。

@@ -105,19 +105,41 @@ export function createCloudApi({
     }
   }
 
+  /**
+   * 取访问令牌。允许两种返回形式：
+   *   - 字符串（旧形式）
+   *   - `{ token, transient }`：transient 表示「暂时拿不到令牌」而不是「未登录」。
+   *     前者必须归为可重试的离线失败（保留本机改动），后者才是登录失效（评审 P2-8）。
+   */
+  async function acquireToken(getter) {
+    const raw = await getter();
+    if (raw == null) return { token: null, transient: false };
+    if (typeof raw === 'string') return { token: raw, transient: false };
+    return { token: raw.token ?? null, transient: Boolean(raw.transient) };
+  }
+
+  function noTokenFailure({ transient }) {
+    if (transient) {
+      return { ok: false, result: { kind: 'offline', message: '暂时无法连接云端，改动已保存在本机', retryable: true } };
+    }
+    return { ok: false, result: { ...FAILURES.not_authenticated } };
+  }
+
   async function rpc(name, payload, { keepalive = false } = {}) {
     if (!configured) {
       return { ok: false, result: { kind: 'not_configured', message: '未配置云端，当前为游客模式', retryable: false } };
     }
     const path = RPC_PATHS[name];
-    let token = await getAccessToken();
+    let { token, transient } = await acquireToken(getAccessToken);
 
     for (let attempt = 0; attempt < 2; attempt++) {
       const res = await post(path, payload, token, { keepalive });
       if (res.status === 401 && attempt === 0 && !keepalive) {
         // 访问令牌过期：刷新一次再重试，避免把用户直接踢下线。
-        token = await refreshAccessToken();
-        if (!token) return { ok: false, result: { ...FAILURES.not_authenticated } };
+        const refreshed = await acquireToken(refreshAccessToken);
+        token = refreshed.token;
+        transient = refreshed.transient;
+        if (!token) return noTokenFailure({ transient });
         continue;
       }
       if (!res.ok) return { ok: false, result: describeHttpFailure(res.status, res.body) };
@@ -125,7 +147,7 @@ export function createCloudApi({
       const result = interpretRpcRow(row);
       return { ok: result.kind === 'ok', result, row };
     }
-    return { ok: false, result: { ...FAILURES.not_authenticated } };
+    return noTokenFailure({ transient });
   }
 
   return {

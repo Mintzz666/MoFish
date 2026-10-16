@@ -1,172 +1,247 @@
 # MoFish 开发交接
 
 当前状态：阶段 A（邮箱密码登录 + 单用户跨设备云存档 + Cloudflare 独立入口）的代码、数据库迁移、
-测试与配置文档已完成，位于 `hermes/cloud-auth-sync` 分支，等待 Codex 评审与用户验收。
-**真实云账号联调尚未进行**，因此「云端可用」这一结论目前只由本地真实 Postgres 引擎与本地假后端支撑，
-不能被当成 Supabase 线上验证通过。
+测试与配置文档已完成，位于 `hermes/cloud-auth-sync` 分支。**第二轮：已按 Codex 对第一版提交
+（`9d71aad`）的 8 项评审意见修复并补测试**，等待复审与用户验收。
+
+真实云账号联调仍未进行（阻塞项见文末），因此「云端可用」这一结论目前只由本机真实 Postgres
+引擎与本地假后端支撑，不能当成 Supabase 线上验证通过。
 
 ## 本轮目标
 
-- 用户任务：按 `docs/HERMES-PHASE-A-PROMPT.md` 实施阶段 A —— Cloudflare 独立网页入口 +
-  Supabase 邮箱密码认证与云存档；保留现有 2D 鱼缸；不同时做多人或 3D。
-- 验收标准：两台设备同账号恢复同一鱼缸；不同账号互相隔离；离线/冲突不丢档；无 ChatGPT 登录门槛；
-  未配置云服务时正常降级为游客模式。
-- 开发分支：`hermes/cloud-auth-sync`
-- 基线 commit SHA：`1ed9040ebf79da972540884017b02b8ac7335d0c`（origin/main）
-- 本轮实现 commit / 父提交 SHA：见本轮交接回复（文档不记录自身 SHA，避免为写 SHA 反复提交）
+- Codex 评审提交 `9d71aad`，结论「暂不验收」，提出 5 项 P1 + 3 项 P2 问题。
+- 本轮要求：逐项修复并为每项补回归测试；成长结算需要真实多数据库连接并发测试；
+  不得仅调整测试预期来消除失败；完成后更新 HANDOFF、提供新 SHA、逐项修复说明与实际测试结果。
+- 开发分支：`hermes/cloud-auth-sync`（基线 `1ed9040`）
+- 本轮 commit SHA 与父提交：见本轮交接回复（文档不记录自身 SHA，避免为写 SHA 反复提交）
 
-## 代码改动与设计选择
+## 逐项修复说明
 
-### 新增
+### P1-1 重连会绕过 revision 冲突，静默覆盖另一台设备的修改
 
-| 文件 | 作用 |
+- **根因**：`syncNow()` 先调用 `settle_growth`，并把返回的**服务端最新 revision** 写成本机
+  `revision`，然后 `flush()` 用它作为 `expected_revision` 上传本机旧快照。云端确实等于这个新
+  revision，于是条件更新成功——A 已提交的改名被 B 的旧快照覆盖，界面还显示「已同步」。
+- **修复**：引入 `baseRevision`（本机状态所基于的服务端 revision，与「刚读到的最新 revision」严格区分）。
+  写入永远用 `baseRevision` 做条件更新；只有云端 revision 仍等于基线才可能成功，否则判定为冲突。
+  同步顺序固定为**先上传本机改动，再结算服务端成长**（`save_aquarium` 不改动成长锚点，
+  所以写完之后再结算，这段时间的成长照样补上，既不会丢也不会重复计算）。
+- **测试**：`[P1-1] 重连（syncNow）不会绕过冲突去覆盖另一台设备已经提交的改动`（复现 Codex 给出的
+  路径：A 改名并保存 → B 改水草后重连 → 断定为冲突、A 的名字保留、B 的改动保留且可导出）；
+  `[P1-1] 同步顺序固定为「先上传本机改动 → 再结算服务端成长」`（断言请求顺序 + 成长只加一次）。
+
+### P1-2 本地已落盘、尚未上传的改动可能在恢复时丢失
+
+- **根因**：`persistLocal()` 只写账号缓存，没有记录「有未同步改动」这件事；恢复对账发现没有
+  pending，就直接采用云端。于是「本机已保存的水草 7」在重新对账后变回 3，且没有备份。
+- **修复**：本机落盘统一交给同步引擎（`engine.persistLocal()`）：同时写账号缓存、当前指针，
+  以及**未同步副本 + 它基于的 revision**（`mofish.pending.<uid>.<aid>` 存成
+  `{v:1, baseRevision, state}` 信封）。恢复时：基线仍等于云端 revision → 直接补传；
+  基线比云端旧 → 判定冲突交给用户；基线未知（离线首次对账）→ 保守地当作有改动。
+- **测试**：`[P1-2] 本机已落盘但未上传的改动：重新打开页面后仍会上传，而不是被云端回退`；
+  `[P1-2] 本机未同步改动遇上云端已变更：给出冲突而不是静默丢弃`（含冲突界面能同时列出两份内容）。
+
+### P1-3 换号后旧请求仍能更新新账号的界面与缓存
+
+- **根因**：`setSession()` 只清空变量，没有取消在途请求，也没有拒绝过期响应。A 的写入响应
+  在 B 登录之后到达时，会调用 `adopt()`：用 `userId()`（此时是 B）去写缓存，结果把 A 的鱼缸
+  写进 B 的键，界面也显示 A 的数据。数据库 RLS 管不到这种客户端串档。
+- **修复**：加入会话代次 `generation`：`setSession`/`dispose` 时 +1；所有异步流程在 await 之后
+  都要通过 `stale(gen)` 检查才能改状态、写缓存或刷新界面。界面层同样加了 `opToken`
+  （登录/注册/回调/退出各自递增），晚到的响应直接丢弃。
+- **测试**：`[P1-3] 换号后旧会话的响应必须被丢弃，不得写进新账号的界面与缓存`（用可控的
+  响应门闩复现「响应晚到」）、`[P1-3] 退出登录后到达的响应不会把登录状态写回界面`。
+
+### P1-4 邮件验证和重置密码的回调流程不可用
+
+- **根因**：回调 URL 片段里只有令牌、没有用户信息，`acceptCallbackSession` 直接拿令牌拼会话，
+  得到的会话 `user.id` 为空 → 同步引擎把它当游客，界面却提示已登录（错位）。此外重置回调
+  只在当次渲染里临时显示改密面板，弹窗一关或刷新就丢。
+- **修复**：
+  1. `acceptCallbackSession` 改为异步：先用 `GET /auth/v1/user` 确认身份，再构造并落盘会话；
+     确认失败就不写会话并给出明确提示。
+  2. `normalizeSession` 拒绝没有 `user.id` 的会话，从类型上杜绝「假登录」。
+  3. 重置流程改为持久状态：`mofish.auth.flow = {type:'recovery', email}`，改密面板在刷新后、
+     手动打开账号弹窗后都保持显示，直到设置新密码或用户选「稍后设置」；退出登录会清掉它。
+  4. 回调处理后面板自动打开并给出结果文案（验证成功 / 链接有效请改密 / 链接失效）。
+- **测试**：单元层 `缺少 user.id 的响应不算有效会话`、`邮件回调：必须先取回用户身份才算登录；
+  无效令牌不落盘`；端到端新增 9 项（验证回调真正登录并建缸、令牌从地址栏清除、
+  重置回调自动打开改密面板、改密面板不被账号面板顶掉、刷新后仍保留、改密写入服务端且新密码可登录）。
+
+### P1-5 数据库允许绕过 RPC 直接修改 revision、成长锚点和存档
+
+- **根因**：迁移给 `authenticated` 授予了整表 `INSERT/UPDATE/DELETE`，RLS 只检查归属，
+  因此用户可以 `update aquariums set revision = 42` 或把 `state_json` 改成 `{}`，
+  函数里的校验与冲突控制形同虚设。
+- **修复**：`revoke all on public.aquariums from anon, public, authenticated` 后只 `grant select`；
+  三个写入函数改为 `SECURITY DEFINER`（属主执行），函数内自行做身份与归属过滤，
+  `save_aquarium` 增加 `owner_id = v_uid` 条件（原来依赖 RLS，改为 definer 后必须显式写），
+  `settle_growth` 的读取与更新同样带 owner 条件；`search_path` 固定为 `public, pg_temp`；
+  删除已无意义的写策略；顺带补 `grant usage on schema public`，让迁移在原生 Postgres 上也能独立执行。
+- **测试**：`authenticated 无法绕过 RPC 直接改写存档、revision 与成长锚点`（四类直接写都断言
+  `permission denied`，并复核数据未被改动）；`迁移对象齐备…且只有 SELECT 表权限`
+  （用 `has_table_privilege` / `has_function_privilege` 断言权限矩阵、`prosecdef`、`proconfig`）；
+  `校验函数不对客户端开放，但受控 RPC 内部仍能使用它`。
+
+### P1-6 成长结算缺少并发保护，可能重复奖励
+
+- **根因**：`settle_growth()` 先读锚点、再无条件更新，两个会话可能读到同一个旧锚点，各加一次成长。
+- **修复**：结算改为 `SELECT ... FOR UPDATE` 锁住该行后再计算，第二個事务会阻塞到第一个提交，
+  之后读到的是已推进的锚点 → credited = 0。
+- **测试**：新增 `tests/sql/concurrency.test.js`，用**两个/三个独立的真实 Postgres 连接**并发调用：
+  - `并发结算成长：两个真实连接同时调用，只奖励一次` → 断言 credited 为 `[0, 3600]`、成长只 +0.008、revision 只 +1
+  - `并发结算成长：三个连接同时调用也只奖励一次` → `[0, 0, 1800]`
+  - `并发保存同一 revision：只有一个成功，另一个拿到 conflict 且不覆盖数据`
+  - `并发结算 vs 并发保存交错：不会互相覆盖，且成长只结算一次`
+- **鉴别力验证**（证明测试不是空过）：临时删掉 `for update` 后重跑，前两项立刻失败并复现双重/三重奖励
+  （`[3600,3600]`、`[1800,1800,1800]`），恢复后 4/4 通过。
+- **说明**：PGlite 是单连接内核，语句串行执行，证明不了行锁；所以这部分必须用真实多连接实例。
+  测试默认用 `optionalDependencies` 里的 `embedded-postgres` 起本地实例，也可用
+  `MOFISH_TEST_PG_URL` 指向现有 Postgres，两者都没有时明确 SKIP（不会伪装成通过）。
+
+### P2-7 服务端校验会放过缺失字段
+
+- **根因**：缺失字段在 jsonb 里取出来是 `NULL`，`<>` 比较得到 `NULL`（既不真也不假），
+  所以 `if p_state->'night' not in ('boolean')` 这类判断对整份缺字段的存档不生效；
+  另外没有检查重复的鱼 id。
+- **修复**：重写 `mofish_state_error`，每个字段都先判存在性（`is null` / `is distinct from`）再判类型，
+  数值统一用 `numeric` 比较（避免类型转换异常）；新增 `fish_id_duplicated`；`savedAt` 加上限。
+- **测试**：`服务端校验：缺失字段必须被拒绝（jsonb 里缺失即 NULL，不能用 <> 判空）`（16 个用例覆盖
+  顶层与鱼字段的缺失/类型错误 + 整份缺字段的存档）、`服务端校验：重复的鱼 id 被拒绝`、
+  `前后端口径一致：客户端 model.validate 产出的存档一定能通过服务端校验`（跨边界属性测试，
+  防止「前端裁剪出的存档被服务端拒绝」这类死锁）。
+  同时把假后端的 `validateState` 对齐到同一套规则，避免端到端测试放过真实服务端会拒绝的存档。
+
+### P2-8 暂时断网会删除仍可恢复的登录凭据
+
+- **根因**：`refresh()` 只要失败就 `clearSession()`，网络错误、5xx、限流都算「失效」。
+  用户断网刷新一次就会掉线，连离线缓存都读不出来。
+- **修复**：区分两类失败。凭据真的失效（4xx，如 `invalid_grant` / `refresh_token_not_found`）→ 清除会话；
+  暂时连不上（网络错误 / 5xx / 429）→ **保留会话与凭据**，返回 `reason: 'offline'`，
+  由同步引擎进入离线状态并在恢复网络后自动重试。`getSession` 的 `reason` 明确为
+  `fresh / refreshed / expired / offline / invalid_grant / no_session`；数据接口的取令牌改为
+  `{token, transient}`，`transient` 走可重试的离线分支而不是 `unauthenticated`。
+- **测试**：`刷新失败要区分「凭据失效」与「暂时连不上」`（三种情形分别断言会话是否被清除）；
+  端到端 `离线时状态显示为离线` / `离线改动以未同步副本存在本机` / `重连后离线改动写入云端`。
+
+## 代码改动清单（本轮）
+
+| 文件 | 改动 |
 | --- | --- |
-| `supabase/migrations/0001_phase_a_cloud_saves.sql` | `aquariums` 表、RLS 策略、服务端存档校验函数、三个 RPC（幂等开缸 / 原子保存 / 幂等成长结算） |
-| `supabase/rollback/0001_phase_a_cloud_saves.down.sql` | 最后手段的删对象脚本（带备份警告；不是默认回滚步骤） |
-| `web/storage.js` | 本地存储层：游客存档（沿用 `mofish.v1`）+ 按「账号 + 鱼缸」隔离的缓存 / 未同步副本 / 备份 |
-| `web/cloud/config.js` | 读取并校验云端配置；识别并拒绝 service_role / secret key |
-| `web/cloud/auth.js` | Supabase Auth（GoTrue）REST 客户端：注册、登录、刷新、退出、重置、改密、回调解析、错误映射 |
-| `web/cloud/api.js` | PostgREST 客户端：只调用三个 RPC；401 自动刷新重试一次；超时与错误归类 |
-| `web/cloud/sync.js` | 同步状态机：对账、去抖写入、revision 冲突、离线保留、成长记账、账号隔离 |
-| `web/cloud/client.js` | 把认证与数据接口装配成一个云栈（app 与测试共用，避免接线分叉） |
-| `web/ui/account.js` | 账号面板：登录/注册/忘记密码/设置新密码/退出/冲突处理/备份导出 |
-| `web/config.js` | 云端配置占位（空 = 游客模式）；构建时被 `build.mjs` 覆盖为 `dist/config.js` |
-| `web/_headers` | Cloudflare 响应头（含 CSP、`X-Frame-Options`、`sw.js` no-cache） |
-| `wrangler.toml` | Cloudflare Workers 静态资源配置（纯静态，无 Worker 脚本） |
-| `.env.example` | 变量清单，明确区分允许进前端的公开 key 与必须保密的密钥 |
-| `scripts/serve.mjs` | 本地预览服务器：解析并应用 `_headers`，让 CSP 在本地就能提前暴露问题 |
-| `scripts/cloud-smoke.mjs` | 对**真实 Supabase**的冒烟测试（认证、RLS 越权、revision 冲突、幂等结算、自动清理） |
-| `docs/CLOUD-SETUP.md` | 控制台最小步骤、部署、验证清单、备份/恢复/回滚、安全说明、常见问题 |
-| `tests/storage.test.js`、`tests/cloud-config.test.js`、`tests/cloud-auth.test.js`、`tests/cloud-sync.test.js` | 单元与契约测试 |
-| `tests/sql/*` | 在真实 Postgres 引擎（PGlite/WASM）上执行真实迁移，验证 RLS / RPC / 冲突 / 幂等结算 |
-| `tests/fake-supabase/*` | 本地假 Supabase（GoTrue + RPC 语义），供单元测试与浏览器端到端使用 |
-| `tests/e2e/cloud-e2e.mjs` | 浏览器端到端：两台设备、冲突、旧存档选择、离线重连、CSP、手机与电脑布局 |
+| `web/cloud/sync.js` | 重写核心：`baseRevision`/`baseCanonical` 基线、先写后结算、pending 信封、会话代次、冲突时显示本机那份、`persistLocal()`；移除客户端成长增量记账 |
+| `web/cloud/auth.js` | 回调先取回用户身份、`normalizeSession` 强制 `user.id`、刷新失败分类、`getSession.reason` 细化 |
+| `web/cloud/api.js` | 取令牌契约改为 `{token, transient}`，新增可重试的 `offline` 失败类型 |
+| `web/cloud/client.js` | 按新契约接线（`transient` 透传） |
+| `web/storage.js` | pending 改为 `{v, baseRevision, state}` 信封，兼容旧的裸存档格式 |
+| `web/ui/account.js` | 重置流程持久化（`auth.flow`）、回调自动打开面板、改密面板不被顶掉、界面层 `opToken` 防串档 |
+| `web/app.js` | 本机落盘交给引擎（缓存 + 未同步副本 + 基线）；会话恢复按新 `reason` 分派 |
+| `web/index.html` | 改密面板增加「稍后设置」按钮 |
+| `supabase/migrations/0001_phase_a_cloud_saves.sql` | 收写权限、RPC 改 `SECURITY DEFINER` 并显式校验归属、`settle_growth` 加行锁、校验函数 NULL 安全 + 重复 id、`grant usage on schema public` |
+| `tests/cloud-sync.test.js` | 新增 6 项回归测试（P1-1 ×2、P1-2 ×2、P1-3 ×2） |
+| `tests/cloud-auth.test.js` | 新增/改写 3 项（回调身份、会话形状、刷新失败分类） |
+| `tests/sql/migrations.test.js` | 新增/改写 5 项（权限矩阵、越权直写被拒、校验函数不开放、缺失字段、重复 id、前后端口径一致） |
+| `tests/sql/concurrency.test.js` | 新增：真实多连接并发测试（4 项） |
+| `tests/fake-supabase/supabase-fake.mjs` | 校验规则与服务端对齐 |
+| `package.json` | 新增 `test:concurrency` 脚本；`pg` 进 devDependencies，`embedded-postgres` 放 optionalDependencies |
+| `docs/CLOUD-SETUP.md`、`README.md` | 权限模型表、并发测试用法、回调注意事项、FAQ 补充 |
 
-### 修改
+**迁移文件策略**：`0001` 从未应用到任何真实项目（用户尚未建 Supabase 项目），因此本轮直接在原文件上修订，
+并在文件头写明「一旦应用过，后续修改必须新建 0002」。用户执行 1.2 的步骤时拿到的是修订后的版本。
 
-- `web/app.js`：接入存储层与同步引擎；游客模式保留原有的本地离线成长，登录后改由服务端结算；
-  每 15 秒只写 localStorage 且仅在内容变化时写；`visibilitychange` / `pagehide` / `online` / `offline`
-  分别触发同步或落盘；启动时**不再**主动创建游客存档。
-- `web/model.js`：新增 `STATE_VERSION`、`cloneState`、`canonicalState`（用于判断「是否真的有变更」，
-  刻意排除 `savedAt` 与每帧位置）。存档结构本身未变，仍是 `version: 1`。
-- `web/index.html`、`web/style.css`：页头状态标签与账号入口、账号面板、冲突与备份区块；
-  文案从「无需登录」更新为「本地保存 · 可选云同步」。
-- `web/sw.js`：明确只缓存同源静态资源，跨源（Supabase）放行，`/auth/`、`/rest/`、带 Authorization 的请求
-  一律不进缓存；缓存版本升到 `mofish-static-v2`。
-- `build.mjs`：构建期注入 `dist/config.js`；检测到 service_role/secret key 直接让构建失败；
-  校验放在删除 `dist/` **之前**，避免配置写错时破坏上一次可用产物。
-- `package.json`：新增 `preview`、`test:cloud`、`test:e2e` 脚本；新增仅用于测试的 devDependency
-  `@electric-sql/pglite`（未安装时 SQL 集成测试会明确 SKIP，不会假装通过）。
-- `.gitignore`：忽略 `.env`、`.dev.vars`、`.wrangler/`。
-- `README.md`：新增「云存档（阶段 A）」与新的同步设计说明。
-
-### 存档格式与兼容
-
-- 游戏存档结构**未变化**（仍是 `version: 1`：`fish/plants/night/sound/savedAt`），因此旧本地存档、
-  旧的 JSON 导出/导入都继续可用；游客存档键名仍是 `mofish.v1`。
-- 云端新增的是**同步元数据**（revision、成长锚点）与按账号/鱼缸隔离的本地缓存键，
-  不改动游戏存档本身。服务端会校验存档结构并且只接受 `state_version = 1`。
-- 登录前若本机有旧存档而云端也有存档，界面会让用户选择保留哪一份；被放弃的一份会归档为本机备份
-  （`mofish.backup.*`，每个鱼缸最多 3 份，可导出）。
-
-### 关键设计选择（请评审时重点看）
-
-1. **不引入 `supabase-js`**：只用 6 个公开 REST 端点自实现客户端。理由是保持零第三方运行时代码、
-   避免依赖 CDN（国内网络不稳），并且全部逻辑可审查。代价是刷新令牌轮转与错误码映射需要自己维护。
-2. **认证流程用 implicit**：不发送 `code_challenge`，邮件链接把令牌放在 URL 片段，前端读取后立刻
-   `history.replaceState` 清除。
-3. **成长记账**：已登录时客户端不做本地时间成长，由服务端 `settle_growth` 按服务端时间整秒结算
-   （锚点推进到 `now()`，被 24 小时上限截掉的余量按设计丢弃，与本地 `clamp` 语义一致）。
-   若此时本机还有未同步改动，客户端把服务端返回的 `credited_seconds` 增量同样记到本地副本上再合并，
-   保证同一段时间只加一次、离线喂食等用户动作不丢。
-4. **冲突处理**：revision 冲突时不重试覆盖，先保留未同步副本；用户选「用本机覆盖云端」时会先取云端
-   最新状态，**把将被覆盖的云端版本归档为本机备份**，再用最新 revision 重试；选「采用云端」时把本机
-   未同步副本归档为备份。
-5. **阶段 A 每账号一条鱼缸**（唯一索引 `aquariums_owner_phase_a_uidx`）。ROADMAP 提到的
-   「导入为新缸」需要有第二条鱼缸，本阶段未提供该选项（选择界面只有「采用云端 / 用本机覆盖云端 /
-   稍后决定」）。阶段 B 引入成员关系时需新增迁移来放宽该索引。
+**存档格式兼容性**：游戏存档结构未变（`version: 1`），旧本地存档与旧导出文件继续可用。
+新增的只有本机 pending 信封格式（并兼容读取旧的裸存档写法）。
 
 ## 验证证据
 
-| 项目 | 实际命令或操作 | 结果 |
+| 项目 | 命令 / 操作 | 结果 |
 | --- | --- | --- |
-| 逻辑 / 契约测试 | `npm test` | **83 tests / 83 pass / 0 fail / 0 skipped**（Node v22.23.2） |
-| 其中：数据库迁移与 RLS | `tests/sql/migrations.test.js`（真实 Postgres 引擎 PGlite，跑的是仓库里的迁移文件） | 21 项通过：迁移幂等重放、跨账号读/改/删与 RPC 越权被拒、伪造 owner 插入被拒、匿名与无 claims 被拒、原子 revision 成功/冲突/不存在、9+X 类非法存档被服务端拒绝、成长结算幂等与 24 小时封顶、时钟回拨不产生负成长 |
-| 其中：同步引擎契约 | `tests/cloud-sync.test.js` | 25 项通过：游客模式零请求、开缸 created 标志、第二设备恢复、去抖只写一次、无变更不写、冲突两种处理与备份留存、旧存档选择、离线保留与重连、5xx 不丢档、非法存档不重试、令牌过期自动刷新、结算只加一次、换号不串档 |
-| 静态构建 | `npm run build` | 成功，`dist/` 输出 9 个文件 + `cloud/`、`ui/` 目录 + `_headers`；未配置时明确输出「游客模式」 |
-| 构建安全闸 | 用 service_role JWT 作为 `MOFISH_SUPABASE_ANON_KEY` 构建 | **构建失败并给出中文说明**（exit 1），且不会破坏上一次的 `dist/` |
-| 浏览器端到端（电脑） | `node tests/e2e/cloud-e2e.mjs`（Chrome 152 headless，真实构建产物 + 本地假 Supabase + `_headers` 生效） | **39/39 通过**：两设备同账号恢复、改名去抖只写一次、revision 冲突与两种处理（含备份留存）、旧存档与云端并存时的选择、离线改动→重连写入、成长结算不重复奖励、无 CSP 违规、无前端错误 |
-| 浏览器端到端（手机） | 同上，真实移动视口仿真 | 390×844 与 320×568：`scrollWidth == innerWidth`（无横向溢出），账号面板完整可见（356px / 286px 宽），冲突区按钮不再被压成竖排 |
-| 部署前自检 | `npm run preview` + `curl` 检查响应头 | CSP、`X-Frame-Options: DENY`、`Referrer-Policy`、`X-Content-Type-Options`、`sw.js` 的 `Cache-Control: no-cache` 均生效；未知路径返回 404（与 `not_found_handling = "none"` 一致）；目录穿越请求被拒 |
-| 缺少测试依赖时的诚实降级 | 临时移走 `node_modules` 后运行 `node --test tests/sql/migrations.test.js` | 全部标记 **SKIP** 并说明原因，不会伪装成通过 |
+| 单元 + 集成测试 | `npm test` | **100 tests / 100 pass / 0 fail / 0 skipped**（Node v22.23.2；含 4 项真实并发测试） |
+| 其中数据库与权限 | `tests/sql/migrations.test.js`（真实 Postgres 内核 PGlite + 真实迁移文件） | 26 项：迁移幂等、权限矩阵、四类越权直写被拒、RPC 越权、匿名/无 claims 被拒、原子 revision、缺失字段与重复 id 校验、前后端口径一致、成长幂等与 24 小时封顶 |
+| 其中真实并发 | `tests/sql/concurrency.test.js`（真实 Postgres 18.4，2–3 个独立连接） | 4 项通过；**去掉行锁即可复现双重奖励**（见 P1-6） |
+| 其中同步契约 | `tests/cloud-sync.test.js` | 31 项，含本轮 6 项回归 |
+| 认证契约 | `tests/cloud-auth.test.js` | 17 项 |
+| 静态构建 | `npm run build` | 成功；未配置云服务时输出「游客模式」 |
+| 构建安全闸 | 用 service_role key 构建 | 构建失败（exit 1）且不破坏上一次产物 |
+| 浏览器端到端 | `npm run test:e2e`（Chrome 152 headless + 真实 `dist` 产物 + 生效的 `_headers` + 本地假后端） | **50 / 50 通过**（新增 9 项回调相关） |
+| 手机 / 电脑布局 | 同一套端到端内 | 390×844 与 320×568 无横向溢出、账号面板完整可见 |
+| 缺依赖时的诚实降级 | 移走 `node_modules/@electric-sql/pglite` 或 `@embedded-postgres` 后重跑 | 相关用例标 **SKIP** 并说明原因，不会伪装成通过 |
 
-本轮测试过程中发现并修掉的真实缺陷（都已补测试或明确说明）：
+鉴别力验证（证明测试真的能抓住问题，而不是事后对齐预期）：
 
-1. `settle_growth` 初版在 24 小时封顶后会把被截掉的余量在下次调用补发 → 改为结算后把锚点推进到
-   `now()`，并加回归测试「封顶后不补发」。
-2. 迁移里 `mofish_state_error` 撤权后没授权给 `authenticated`，`SECURITY INVOKER` 的 RPC 调用会因
-   EXECUTE 权限被拒 → 补授权，由 SQL 集成测试发现。
-3. `conflictDetail()` 在「保存时 revision 冲突」这种 `cloudState` 为 null 的情况下抛异常，
-   导致界面状态卡在「同步中」→ 增加 `cloudKnown` 标记并容错，补了单元测试。
-4. 应用启动时无条件写入游客存档，导致从未玩过游客模式的访客首次登录时被误判成「本机已有一份存档」，
-   弹出多余的选择 → 改为仅在内容变化时落盘，由端到端测试发现。
-5. `scripts/serve.mjs` 命令行入口读取了入参而非返回值，`npm run preview` 会直接崩溃 → 已修复并实测。
+1. 去掉 `settle_growth` 的 `for update` → 并发测试立即失败，复现 `[3600,3600]` / `[1800,1800,1800]`；
+   恢复后通过。
+2. 把 `acceptCallbackSession` 退回「直接用回调令牌建会话」的旧写法 → 端到端从 50/50 掉到 **41/50**，
+   失败项正是回调相关 9 条；恢复后 50/50。
 
-## 复现与体验步骤
+本轮另外修掉的两处自测工具缺陷（不影响产品，但会影响结论可信度，记录在此）：
+`concurrency.test.js` 早期把跳过判定放在 `before` 钩子里（`skip` 选项在定义时求值，导致缺依赖时
+用例会失败而不是跳过）；`embedded-postgres` 在二进制包缺失时会**异步** import 失败并打挂进程
+（try/catch 兜不住），因此加了文件系统预检。
+
+## 复现步骤
 
 ```sh
 git fetch origin && git checkout hermes/cloud-auth-sync
-npm install            # 仅为 SQL 集成测试安装 PGlite；不装也能跑其余测试
-npm test               # 83 项
+npm install          # PGlite（测试内核）+ pg；embedded-postgres 为可选（并发测试用）
+npm test             # 100 项，含真实 Postgres 内核上的权限/校验与真实多连接并发
 npm run build
-npm run preview        # http://127.0.0.1:5173 ，已应用 _headers
-# 浏览器打开 → 右上「登录 / 注册」→ 未配置云端时会明确提示未连接云端，游客模式可正常游玩
-npm run test:e2e       # 需要本机 Chrome；会用本地假后端跑完整两台设备流程
+npm run preview      # http://127.0.0.1:5173 ，已应用 _headers（含 CSP）
+npm run test:e2e     # 需要本机 Chrome；本地假后端跑完整两台设备与邮件回调流程
 ```
 
-配置真实云服务（拿到 Supabase 项目后）：见 `docs/CLOUD-SETUP.md` 的 1.1–1.5；
-上线后先跑 `npm run test:cloud`（脚本会真实建号、验证越权被拒、验证幂等结算，并自动清理测试账号）。
+## 关于自写认证客户端（Codex 的建议）
 
-## 已知问题与评审重点
+Codex 指出「不使用 CDN 不需要以自写认证为代价，官方 SDK 可以打包随网站发布」。这个判断成立，
+我按「本轮只做 8 项修复」的范围没有换实现，但把它记成待用户决策的事项：
+
+- **保持自实现**：零第三方运行时依赖、可直接审查、不引入打包步骤；本轮已把回调、会话切换、
+  刷新错误分类、并发刷新去重等已知坑补齐并有测试覆盖（auth 相关 17 项 + 端到端 9 项）。
+- **改用官方 SDK**：需要在构建期引入 bundler（例如 esbuild）+ `@supabase/supabase-js`，
+  产出一个随站点发布的 bundle（不依赖 CDN，国内网络也能用）；好处是 GoTrue/PostgREST 的边界行为
+  由官方维护，代价是多一条构建链与一个约 100KB+ 的产物，且本轮为此写的 auth 客户端与测试要废弃重做。
+- 建议：**如果阶段 B 要继续加深认证相关能力（多设备会话管理、PKCE、OAuth 等），就换成官方 SDK**；
+  如果认证面保持现状，则继续用自实现并沿用现在的测试。
+- 无论选哪条路，数据库侧的权限模型与同步引擎都不受影响。
+
+## 已知问题与阻塞项
 
 ### 阻塞项（需要云账号才能真正闭环）
 
-- **真实 Supabase 未联调**：`scripts/cloud-smoke.mjs` 已写好但**从未执行过**；GoTrue 的 HTTP 行为、
-  JWT 签发与过期、PostgREST 的实际错误码都还没有被真实服务验证过。数据库侧的 RLS / 冲突 / 幂等结算
-  已在本机真实 Postgres 引擎上验证，但那不等于 Supabase 线上验证。
-- **真实发信未验证**：邮箱验证与重置密码的实际投递、模板、跳转地址依赖控制台 SMTP 配置。
-- **Cloudflare 未部署**：`wrangler.toml` 与 `_headers` 只在本地预览服务器上验证过，未在 Cloudflare 上实测
-  （CSP 是否与线上注入的其他响应头冲突、静态资源行为都需要上线确认）。
-- **真机浏览器未验证**：iOS Safari / Android Chrome 未实测；本轮是 Chrome headless + 真实视口仿真。
+- **真实 Supabase 未联调**：`scripts/cloud-smoke.mjs` 已写好但**从未执行过**。GoTrue 的 HTTP 行为、
+  JWT 签发与过期、PostgREST 的真实错误码、以及「收回表级写权限后 PostgREST 调用 RPC 是否一切正常」
+  都还需要线上确认（本地用真实 Postgres 内核验证过，但那不是 Supabase）。
+- **真实发信未验证**：邮箱验证与重置邮件的投递、模板、跳转地址依赖控制台 SMTP 配置。
+- **Cloudflare 未部署**：`wrangler.toml` 与 `_headers` 只在本地预览服务器验证过。
+- **真机浏览器未实测**：iOS Safari / Android Chrome 未验证（本轮为 Chrome headless + 真实视口仿真）。
 - **无 CI**：仓库没有 `.github/workflows`，上述命令都是本机手工执行的结果。
 
-### 希望 Codex 重点评审的问题
+### 复审建议关注点
 
-1. 自实现 GoTrue 客户端（不用 supabase-js）是否可接受？特别是刷新令牌轮转、并发刷新去重、
-   会话过期判定与错误码映射有没有遗漏的坑（`web/cloud/auth.js`）。
-2. 成长记账模型：已登录且离线时不做本地时间成长、存在未同步改动时把 `credited_seconds` 增量记到本地副本
-   再合并（`web/cloud/sync.js` 的 `applyGrowthDelta` 与 `syncNow`）。请对照
-   `tests/cloud-sync.test.js`「本机有未同步改动时…」用例判断是否会重复计算或丢成长。
-3. 冲突语义是否满足「不静默覆盖」：`resolveConflict('local')` 会先取云端最新状态并归档备份再覆盖；
-   `resolveConflict('cloud')` 会归档本机副本。请判断是否还有更该保留的东西。
-4. 服务端校验 `mofish_state_error` 的边界是否足够（例如 `savedAt` 未校验上限、`species` 上限 3 与前端
-   `SPECIES` 长度耦合、额外字段允许透传）。
-5. 会话令牌存 localStorage 的取舍与 CSP 是否足够；是否需要改成内存会话 + 每次重登。
-6. Service Worker 的排除规则（跨源、`/auth/`、`/rest/`、带 Authorization 的请求）是否足够严格。
-7. 阶段 B 的前瞻：放宽「每账号一条鱼缸」唯一索引、引入 `aquarium_members` 时，本轮的 RPC 与策略
-   需要怎样演进才不需要改动已应用的迁移。
+1. **权限模型变更的影响面**：收回表级写权限后，任何未来想直接用 PostgREST 写表的功能都必须走新函数；
+   请确认 `SECURITY DEFINER` + 固定 `search_path` + 显式 owner 过滤这套写法没有遗漏（尤其
+   `save_aquarium` 的 conflict 探测查询与 `ensure_aquarium` 的 insert 分支）。
+2. **`baseRevision` 语义**：请对照 `hydrate`/`flush`/`syncNow`/`resolveConflict` 四条路径，确认
+   任何情况下都不会用「新读到的 revision」去写入旧快照；以及 pending 的 `baseRevision` 为 null 时
+   保守判定为冲突是否可接受。
+3. **会话代次的覆盖面**：`stale(gen)` 是否覆盖了所有 await 之后的写操作（含 `store.writeBackup`、
+   `store.writePending`、`adopt`、`setStatus`）与界面层 `opToken` 的所有分支。
+4. **回调流程图**：验证链接与重置链接的两条路径、`auth.flow` 的清理时机（改密成功 / 稍后设置 / 退出）。
+5. **并发结论的适用范围**：并发测试用的是本机 Postgres 18.4 实例；Supabase 实际运行版本与连接池
+   （pgbouncer 事务模式）下 `FOR UPDATE` 的行为是否有差异，建议在真实项目上重跑 `npm run test:concurrency`。
+6. **迁移修订方式**：`0001` 未应用于任何真实项目因此就地修订；请确认这一处理可接受，
+   并确认阶段 B 会以新迁移放宽唯一索引。
 
 ### 其它已知限制（有意为之，非缺陷）
 
-- 已登录且离线期间，鱼缸不会在本地按时间成长（避免与服务端重复计算），重连时由服务端一次结算。
-- 服务端 24 小时上限截掉的余量会被丢弃（与本地 `clamp` 语义一致）。
+- 已登录且离线期间不做本地时间成长（避免与服务端重复计算），重连时由服务端一次结算。
+- 服务端 24 小时上限截掉的余量会丢弃（与本地 `clamp` 语义一致）。
 - 阶段 A 一个账号只有一条鱼缸，因此没有「导入为新缸」选项。
-- 本地缓存与未同步副本都只保存在浏览器；清除浏览器数据会删掉它们（云端存档不受影响）。
+- 冲突未解决期间水面上显示的是**本机那一份**（用户最后看到的内容），采用云端需要用户显式点击。
 - 免费 Supabase 项目闲置会暂停；默认发信通道不适合真实用户，上线前必须配 SMTP。
 
 ## 版本与部署
 
-- 用户是否验收：尚未验收本轮工作。
+- 用户是否验收：尚未验收（Codex 第一轮结论为暂不验收，本轮为修复后复审）。
 - 是否调用正式发布 hook：否（未合并 main、未打标签、未运行 release）。
 - 是否更新线上站点：否（未部署 Cloudflare，也未改动原有私有 Sites 地址）。
 - 建议版本：阶段 A 目标为 `v0.2.0`，由用户在验收后决定是否调用 release hook。

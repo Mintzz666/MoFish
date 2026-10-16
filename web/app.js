@@ -53,14 +53,14 @@ let W=1000,H=480,last=0,runtime=[],foods=[],ripples=[],audioCtx,audioNodes,muted
 const reduceMotion=matchMedia('(prefers-reduced-motion: reduce)').matches;
 function toast(s){$('toast').textContent=s;$('toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('visible'),3300);}
 
-/** 本机落盘：游客写 mofish.v1，登录后写该账号+鱼缸的缓存键。不发任何网络请求。 */
+/** 本机落盘：游客写 mofish.v1，登录后交给同步引擎（缓存 + 未同步副本 + 基线）。 */
 let persistedCanonical = canonicalState(state);
 function persistLocal(){
   if(engine.isCloud){
-    const snap=engine.snapshot;
-    if(snap.user&&snap.aquariumId)store.writeAccountState(snap.user.id,snap.aquariumId,state);
-    persistedCanonical=canonicalState(state);
-    return true;
+    const ok=engine.persistLocal();
+    if(ok)persistedCanonical=canonicalState(state);
+    else $('save-status').textContent='本机缓存暂不可用，请用导出备份';
+    return ok;
   }
   const ok=store.writeGuest(state);
   if(ok)persistedCanonical=canonicalState(state);
@@ -167,7 +167,10 @@ if(callback.kind!=='none'){
 if(config.mode==='ready'&&callback.kind!=='session'){
   stack.auth.getSession().then(async restored=>{
     if(restored.ok)await engine.setSession(restored.session);
-    else if(restored.reason==='refresh_failed')accountUI.setNotice('登录状态已失效，请重新登录。','warn');
+    // 过期但凭据仍在（网络/服务端暂时不可用）：以离线方式进入云模式，
+    // 既保留本机缓存与未同步改动，也让下一次联网自动续期（评审 P2-8）。
+    else if(restored.session)await engine.setSession(restored.session);
+    else if(restored.reason==='invalid_grant')accountUI.setNotice('登录状态已失效，请重新登录。','warn');
   }).catch(()=>{});
 }
 

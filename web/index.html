@@ -39,7 +39,7 @@
 <details><summary>隐私与安全</summary><p>鱼缸数据存放在 Supabase，由行级安全策略保证只有你自己的账号能读写；本机只保存会话令牌与缓存。未配置云端时不会发出任何网络请求。管理密钥（service_role）不会也不应出现在网页里。</p></details>
 <button type="button" class="link-button danger" id="session-forget">清除本机该账号缓存</button>
 </section>
-<section id="reset-panel" hidden><p id="reset-hint" class="note"></p><label for="reset-password">新密码</label><input id="reset-password" type="password" autocomplete="new-password" placeholder="至少 6 位"><button class="solid" id="reset-save">保存新密码</button></section>
+<section id="reset-panel" hidden><p id="reset-hint" class="note"></p><label for="reset-password">新密码</label><input id="reset-password" type="password" autocomplete="new-password" placeholder="至少 6 位"><div class="storage-actions"><button class="solid" id="reset-save">保存新密码</button><button class="outline" id="reset-later">稍后设置</button></div><p class="note">设置完新密码后会自动继续使用这个账号。</p></section>
 </dialog>
 <script type="module" src="app.js"></script>
 </body></html>

@@ -5,6 +5,7 @@
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createTestDb, readMigrations, USERS, validState } from './harness.mjs';
+import { initial as modelInitial, validate as modelValidate } from '../../web/model.js';
 
 let pgliteModule = null;
 let skipReason = false;
@@ -61,7 +62,7 @@ test('迁移可幂等重放（第二次应用不报错、不丢数据）', { ski
   });
 });
 
-test('迁移对象齐备：表、唯一索引、RLS、四个函数', { skip: skipReason }, async () => {
+test('迁移对象齐备：表、唯一索引、RLS、四个函数，且只有 SELECT 表权限', { skip: skipReason }, async () => {
   const [tbl] = await db.query(`select relrowsecurity from pg_class where oid = 'public.aquariums'::regclass`);
   assert.equal(tbl.relrowsecurity, true, 'aquariums 已启用 RLS');
 
@@ -70,7 +71,7 @@ test('迁移对象齐备：表、唯一索引、RLS、四个函数', { skip: ski
   assert.ok(names.includes('aquariums_owner_phase_a_uidx'), '阶段 A 的 owner 唯一索引存在');
 
   const fns = await db.query(`
-    select p.proname, p.prosecdef from pg_proc p
+    select p.proname, p.prosecdef, p.proconfig from pg_proc p
     join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public'
       and p.proname in ('mofish_state_error','save_aquarium','ensure_aquarium','settle_growth')
@@ -79,8 +80,74 @@ test('迁移对象齐备：表、唯一索引、RLS、四个函数', { skip: ski
     ['ensure_aquarium', 'mofish_state_error', 'save_aquarium', 'settle_growth']);
   for (const f of fns) {
     if (f.proname === 'mofish_state_error') continue;
-    assert.equal(f.prosecdef, false, `${f.proname} 必须是 SECURITY INVOKER，RLS 才对本调用者生效`);
+    // 写入函数必须是 SECURITY DEFINER：表级写权限已收回，函数以属主身份写入，
+    // 鉴权与归属过滤全部在函数内部完成（否则客户端又能直接调表改写 revision）。
+    assert.equal(f.prosecdef, true, `${f.proname} 必须是 SECURITY DEFINER`);
+    assert.ok((f.proconfig || []).some(c => c.startsWith('search_path=')),
+      `${f.proname} 必须固定 search_path，避免被劫持`);
   }
+
+  // 客户端角色只应能读自己的行，不能直接写表。
+  const priv = await db.asAdmin(async () => (await db.query(`
+    select has_table_privilege('authenticated','public.aquariums','SELECT')     as can_select,
+           has_table_privilege('authenticated','public.aquariums','INSERT')     as can_insert,
+           has_table_privilege('authenticated','public.aquariums','UPDATE')     as can_update,
+           has_table_privilege('authenticated','public.aquariums','DELETE')     as can_delete,
+           has_table_privilege('anon','public.aquariums','SELECT')              as anon_select,
+           has_function_privilege('authenticated','public.save_aquarium(uuid,bigint,jsonb,integer)','EXECUTE') as can_save,
+           has_function_privilege('anon','public.save_aquarium(uuid,bigint,jsonb,integer)','EXECUTE')          as anon_save,
+           has_function_privilege('authenticated','public.mofish_state_error(jsonb)','EXECUTE')                as can_validate`))[0]);
+  assert.equal(priv.can_select, true, 'authenticated 可读自己的行（仍受 RLS 限制）');
+  assert.equal(priv.can_insert, false, 'authenticated 不能直接 INSERT');
+  assert.equal(priv.can_update, false, 'authenticated 不能直接 UPDATE（否则可改写 revision）');
+  assert.equal(priv.can_delete, false, 'authenticated 不能直接 DELETE');
+  assert.equal(priv.anon_select, false, 'anon 不能读表');
+  assert.equal(priv.can_save, true, 'authenticated 可以调用受控写入函数');
+  assert.equal(priv.anon_save, false, 'anon 不能调用写入函数');
+  assert.equal(priv.can_validate, false, '校验函数不对客户端开放');
+});
+
+// ------------------------------------------------------------------ 表级写权限已收回（评审 P1-5）
+
+test('authenticated 无法绕过 RPC 直接改写存档、revision 与成长锚点', { skip: skipReason }, async () => {
+  const mine = await freshAquarium(USERS.alice, validState({ idPrefix: 'guard' }));
+
+  await db.asUser(USERS.alice, async () => {
+    const overwrite = await db.expectError(
+      `update public.aquariums set state_json = '{}'::jsonb where id = $1`, [mine.aquarium_id]);
+    assert.ok(overwrite && /permission denied/i.test(overwrite), `直接改写存档应被拒绝，实际: ${overwrite}`);
+
+    const bumpRevision = await db.expectError(
+      `update public.aquariums set revision = 42 where id = $1`, [mine.aquarium_id]);
+    assert.ok(bumpRevision && /permission denied/i.test(bumpRevision), `直接改写 revision 应被拒绝，实际: ${bumpRevision}`);
+
+    const rewindAnchor = await db.expectError(
+      `update public.aquariums set last_growth_at = now() - interval '10 days' where id = $1`, [mine.aquarium_id]);
+    assert.ok(rewindAnchor && /permission denied/i.test(rewindAnchor), `直接回拨成长锚点应被拒绝，实际: ${rewindAnchor}`);
+
+    const del = await db.expectError(`delete from public.aquariums where id = $1`, [mine.aquarium_id]);
+    assert.ok(del && /permission denied/i.test(del), `直接删除应被拒绝，实际: ${del}`);
+  });
+
+  // 数据确实没被动过
+  await db.asUser(USERS.alice, async () => {
+    const [row] = await db.query('select revision, state_json from public.aquariums where id = $1', [mine.aquarium_id]);
+    assert.equal(row.revision, mine.revision);
+    assert.equal(row.state_json.fish[0].id, 'guard-0');
+  });
+});
+
+test('校验函数不对客户端开放，但受控 RPC 内部仍能使用它', { skip: skipReason }, async () => {
+  const mine = await freshAquarium(USERS.alice, validState({ idPrefix: 'vfn' }));
+  await db.asUser(USERS.alice, async () => {
+    const err = await db.expectError(`select public.mofish_state_error($1::jsonb)`, [JSON.stringify(validState())]);
+    assert.ok(err && /permission denied/i.test(err), `直接调用校验函数应被拒绝，实际: ${err}`);
+
+    // RPC 内部调用同样生效：非法存档仍被拒（说明 SECURITY DEFINER 的身份继承正常）
+    const bad = await db.query('select * from public.save_aquarium($1, $2, $3::jsonb)',
+      [mine.aquarium_id, mine.revision, JSON.stringify({ version: 1, fish: [] })]);
+    assert.equal(bad[0].status, 'invalid_state');
+  });
 });
 
 // ------------------------------------------------------------------ 开缸与账号隔离
@@ -102,25 +169,29 @@ test('ensure_aquarium 幂等：重复开缸返回同一条鱼缸，不新增记�
   assert.equal(count.n, 1, '数据库里只有一条记录');
 });
 
-test('账号隔离：他人无法读、改、删我的鱼缸', { skip: skipReason }, async () => {
+test('账号隔离：他人无法读、改、删我的鱼缸（表级写权限已收回）', { skip: skipReason }, async () => {
   const mine = await freshAquarium(USERS.alice, validState({ idPrefix: 'iso' }));
   const id = mine.aquarium_id;
 
   await db.asUser(USERS.bob, async () => {
     const read = await db.query('select * from public.aquariums where id = $1', [id]);
-    assert.equal(read.length, 0, 'bob 读不到 alice 的鱼缸');
+    assert.equal(read.length, 0, 'bob 读不到 alice 的鱼缸（RLS）');
 
-    const upd = await db.query(
-      `update public.aquariums set state_json = '{"hijacked":true}'::jsonb where id = $1 returning id`, [id]);
-    assert.equal(upd.length, 0, 'bob 直接 update 影响 0 行');
+    // 表级写权限已收回：连自己的行都不能直接改，越权改别人的自然更不可能。
+    const upd = await db.expectError(
+      `update public.aquariums set state_json = '{"hijacked":true}'::jsonb where id = $1`, [id]);
+    assert.ok(upd && /permission denied/i.test(upd), `直接 update 应被拒绝，实际: ${upd}`);
 
-    const del = await db.query('delete from public.aquariums where id = $1 returning id', [id]);
-    assert.equal(del.length, 0, 'bob 删不掉 alice 的鱼缸');
+    const del = await db.expectError('delete from public.aquariums where id = $1', [id]);
+    assert.ok(del && /permission denied/i.test(del), `直接 delete 应被拒绝，实际: ${del}`);
 
     const rpc = await db.query('select * from public.save_aquarium($1, $2, $3::jsonb)',
       [id, 1, JSON.stringify(validState({ idPrefix: 'hacked' }))]);
     assert.equal(rpc[0].status, 'not_found', 'RPC 只按 auth.uid() 定位，不认传入的 id');
     assert.equal(rpc[0].error_code, 'aquarium_not_found');
+
+    const settle = await db.query('select * from public.settle_growth($1, 86400)', [id]);
+    assert.equal(settle[0].status, 'not_found', 'bob 无法结算 alice 的鱼缸');
 
     const list = await db.query('select id from public.aquariums');
     assert.equal(list.length, 1, 'bob 只看到自己的鱼缸');
@@ -136,12 +207,17 @@ test('账号隔离：他人无法读、改、删我的鱼缸', { skip: skipReaso
   });
 });
 
-test('账号隔离：伪造 owner_id 的插入被 RLS 拒绝', { skip: skipReason }, async () => {
+test('账号隔离：伪造 owner_id 的插入被拒绝（无写权限）', { skip: skipReason }, async () => {
   const mine = await freshAquarium(USERS.alice);
   await db.asUser(USERS.bob, async () => {
     const err = await db.expectError(
       `insert into public.aquariums (owner_id, state_json) values ($1, '{}'::jsonb)`, [USERS.alice]);
-    assert.ok(err && /row-level security/i.test(err), `期望 RLS 拒绝，实际: ${err}`);
+    assert.ok(err && /permission denied/i.test(err), `期望权限拒绝，实际: ${err}`);
+
+    // 即使是自己的 owner_id 也不能直接插入：开缸只能走 ensure_aquarium。
+    const own = await db.expectError(
+      `insert into public.aquariums (owner_id, state_json) values ($1, '{}'::jsonb)`, [USERS.bob]);
+    assert.ok(own && /permission denied/i.test(own), `自己插入也应被拒绝，实际: ${own}`);
   });
   assert.ok(mine.aquarium_id);
 });
@@ -291,6 +367,95 @@ test('服务端校验：非法存档被拒绝并返回稳定错误码', { skip: 
     // 被拒绝的请求没有改变数据库
     const cur = await db.query('select revision from public.aquariums where id = $1', [mine.aquarium_id]);
     assert.equal(cur[0].revision, mine.revision);
+  });
+});
+
+test('服务端校验：缺失字段必须被拒绝（jsonb 里缺失即 NULL，不能用 <> 判空）', { skip: skipReason }, async () => {
+  const mine = await freshAquarium(USERS.carol, validState({ idPrefix: 'miss' }));
+
+  const withMissing = (mutate) => {
+    const s = validState({ idPrefix: 'miss' });
+    mutate(s);
+    return JSON.stringify(s);
+  };
+  const cases = [
+    ['version_missing', withMissing(s => { delete s.version; })],
+    ['fish_missing', withMissing(s => { delete s.fish; })],
+    ['plants_missing', withMissing(s => { delete s.plants; })],
+    ['night_missing', withMissing(s => { delete s.night; })],
+    ['sound_missing', withMissing(s => { delete s.sound; })],
+    ['saved_at_missing', withMissing(s => { delete s.savedAt; })],
+    ['fish_id_missing', withMissing(s => { delete s.fish[0].id; })],
+    ['fish_name_missing', withMissing(s => { delete s.fish[0].name; })],
+    ['fish_species_missing', withMissing(s => { delete s.fish[0].species; })],
+    ['fish_born_missing', withMissing(s => { delete s.fish[0].born; })],
+    ['fish_growth_missing', withMissing(s => { delete s.fish[0].growth; })],
+    ['fish_meals_missing', withMissing(s => { delete s.fish[0].meals; })],
+    ['version_not_number', withMissing(s => { s.version = '1'; })],
+    ['plants_not_number', withMissing(s => { s.plants = '3'; })],
+    ['saved_at_not_number', withMissing(s => { s.savedAt = null; })],
+    ['fish_name_invalid', withMissing(s => { s.fish[0].name = 5; })]
+  ];
+
+  await db.asUser(USERS.carol, async () => {
+    for (const [expectedCode, payload] of cases) {
+      const r = await db.query('select * from public.save_aquarium($1, $2, $3::jsonb)',
+        [mine.aquarium_id, mine.revision, payload]);
+      assert.equal(r[0].status, 'invalid_state', `${expectedCode}: 期望被拒绝，payload=${payload.slice(0, 70)}`);
+      assert.equal(r[0].error_code, expectedCode, `payload=${payload.slice(0, 70)}`);
+    }
+    // 整份缺字段的存档（早期会被漏过的形态）也必须被拒
+    const stripped = await db.query('select * from public.save_aquarium($1, $2, $3::jsonb)',
+      [mine.aquarium_id, mine.revision, JSON.stringify({ fish: [{ name: '无 id 的鱼' }] })]);
+    assert.equal(stripped[0].status, 'invalid_state');
+
+    const cur = await db.query('select revision from public.aquariums where id = $1', [mine.aquarium_id]);
+    assert.equal(cur[0].revision, mine.revision, '被拒绝的请求没有改变 revision');
+  });
+});
+
+test('服务端校验：重复的鱼 id 被拒绝', { skip: skipReason }, async () => {
+  const mine = await freshAquarium(USERS.carol, validState({ idPrefix: 'dup' }));
+  const dup = validState({ idPrefix: 'dup' });
+  dup.fish[1].id = dup.fish[0].id;
+
+  await db.asUser(USERS.carol, async () => {
+    const r = await db.query('select * from public.save_aquarium($1, $2, $3::jsonb)',
+      [mine.aquarium_id, mine.revision, JSON.stringify(dup)]);
+    assert.equal(r[0].status, 'invalid_state');
+    assert.equal(r[0].error_code, 'fish_id_duplicated');
+  });
+});
+
+test('前后端口径一致：客户端 model.validate 产出的存档一定能通过服务端校验', { skip: skipReason }, async () => {
+  const mine = await freshAquarium(USERS.carol, validState({ idPrefix: 'align' }));
+
+  // 这些样本覆盖了客户端会把越界值「修正」而不是拒绝的路径（成长/喂食/水草/名字长度/时间戳）。
+  const samples = [
+    modelInitial(1750000000000),
+    modelValidate({
+      version: 1,
+      fish: [{ id: 'legacy-1', name: '  空格   很多  ', species: 2, born: 1, growth: 5, meals: 3.7 }],
+      plants: 99, night: 1, sound: 'x', savedAt: 'not-a-number'
+    }, 1750000000000),
+    modelValidate({
+      version: 1,
+      fish: Array.from({ length: 12 }, (_, i) => ({
+        id: `f${i}`, name: '名'.repeat(20), species: i % 4, born: 1750000000000, growth: i / 12, meals: i
+      })),
+      plants: 8, night: true, sound: true, savedAt: 1750000000000
+    }, 1750000000000)
+  ];
+
+  await db.asUser(USERS.carol, async () => {
+    let revision = mine.revision;
+    for (const [index, sample] of samples.entries()) {
+      const r = await db.query('select * from public.save_aquarium($1, $2, $3::jsonb)',
+        [mine.aquarium_id, revision, JSON.stringify(sample)]);
+      assert.equal(r[0].status, 'ok',
+        `样本 ${index} 应被服务端接受，实际 ${r[0].status}/${r[0].error_code}: ${JSON.stringify(sample).slice(0, 120)}`);
+      revision = r[0].revision;
+    }
   });
 });
 

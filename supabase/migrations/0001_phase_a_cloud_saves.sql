@@ -1,16 +1,19 @@
--- MoFish 阶段 A：邮箱账号 + 云端鱼缸存档
--- 目标：每个账号一条鱼缸记录；只有 owner 本人可读写；写入按 revision 原子条件更新；
---       离线成长由服务端时间结算，最多 24 小时，重复调用不重复结算。
+-- MoFish 阶段 A：云存档（表 + RLS + 受控写入函数）
 --
--- 约定：本文件必须整份在一个事务里应用（Supabase 迁移默认如此）。
--- 幂等：① 首次应用 ② 再次应用（无操作）③ 迁移被部分回滚后重放
+-- 本文件可在 Supabase SQL Editor 里整份重复执行（幂等）。
 --
--- 依赖：Supabase 预置的 auth schema、auth.uid()、authenticated / anon 角色、
---       扩展 pgcrypto（gen_random_uuid）。
+-- 安全模型（务必先读这一段）：
+--   * `authenticated` 只有 public.aquariums 的 **SELECT** 权限，没有任何 INSERT/UPDATE/DELETE 权限。
+--     所有写入只能经由三个 SECURITY DEFINER 函数完成，函数内部再自行校验 auth.uid()、参数与存档结构。
+--     这样客户端无法直接改写 revision、last_growth_at 或塞入未校验的 state_json —— 校验与并发控制
+--     是数据库强制边界，而不是「请前端不要直接调表」的君子协定。
+--   * anon / public 不持有任何表权限，也没有函数 EXECUTE 权限。
+--
+-- 注意：本迁移号 (0001) 从未应用到任何真实项目，因此本轮评审后直接在原文件上修订。
+-- 一旦应用过，后续修改必须新建 0002 等迁移文件，不要就地改本文件。
 
--- ---------------------------------------------------------------- 凭证校验工具
+-- ---------------------------------------------------------------- 存档结构校验（服务端权威）
 
--- 返回 null 表示存档结构合法；否则返回稳定的错误码（供前端提示，不返回用户数据）。
 create or replace function public.mofish_state_error(p_state jsonb)
 returns text
 language plpgsql
@@ -18,79 +21,90 @@ immutable
 set search_path = public, pg_temp
 as $$
 declare
-  v_count integer;
-  v_fish  jsonb;
-  v_growth numeric;
-  v_meals numeric;
-  v_born numeric;
-  v_species numeric;
-  v_plants numeric;
+  v_fish jsonb;
+  v_id   text;
+  v_ids  text[] := array[]::text[];
+  v_num  numeric;
 begin
-  if p_state is null or jsonb_typeof(p_state) <> 'object' then
+  if p_state is null then
+    return 'state_missing';
+  end if;
+  if jsonb_typeof(p_state) is distinct from 'object' then
     return 'state_not_object';
   end if;
 
-  -- 状态结构版本：阶段 A 只接受 1。新增版本必须同时提供迁移脚本，不能就地放宽。
-  if p_state->'version' is distinct from '1'::jsonb then
-    return 'unsupported_state_version';
-  end if;
+  -- 每个字段都显式判断「是否存在」与「类型是否正确」。
+  -- 缺失字段在 jsonb 里取出来是 NULL，用 `<> value` 比较得到 NULL（既不真也不假），
+  -- 早期版本因此会漏过整份缺字段的存档，必须用 `is null` / `is distinct from` 判空。
+  if p_state->'version' is null then return 'version_missing'; end if;
+  if jsonb_typeof(p_state->'version') is distinct from 'number' then return 'version_not_number'; end if;
+  v_num := (p_state->>'version')::numeric;
+  if v_num <> 1 then return 'unsupported_state_version'; end if;
 
-  if jsonb_typeof(p_state->'fish') <> 'array' then
-    return 'fish_not_array';
-  end if;
-  v_count := jsonb_array_length(p_state->'fish');
-  if v_count < 1 then return 'fish_count_below_min'; end if;
-  if v_count > 12 then return 'fish_count_above_max'; end if;
+  if p_state->'fish' is null then return 'fish_missing'; end if;
+  if jsonb_typeof(p_state->'fish') is distinct from 'array' then return 'fish_not_array'; end if;
+  if jsonb_array_length(p_state->'fish') < 1 then return 'fish_count_below_min'; end if;
+  if jsonb_array_length(p_state->'fish') > 12 then return 'fish_count_above_max'; end if;
 
-  v_plants := case when jsonb_typeof(p_state->'plants') = 'number' then (p_state->>'plants')::numeric end;
-  if v_plants is null or v_plants <> trunc(v_plants) or v_plants < 0 or v_plants > 8 then
-    return 'plants_out_of_range';
-  end if;
+  if p_state->'plants' is null then return 'plants_missing'; end if;
+  if jsonb_typeof(p_state->'plants') is distinct from 'number' then return 'plants_not_number'; end if;
+  v_num := (p_state->>'plants')::numeric;
+  if v_num <> trunc(v_num) or v_num < 0 or v_num > 8 then return 'plants_out_of_range'; end if;
 
-  if jsonb_typeof(p_state->'night') not in ('boolean') then return 'night_not_boolean'; end if;
-  if jsonb_typeof(p_state->'sound') not in ('boolean') then return 'sound_not_boolean'; end if;
-  if jsonb_typeof(p_state->'savedAt') <> 'number' then return 'saved_at_not_number'; end if;
+  if p_state->'night' is null then return 'night_missing'; end if;
+  if jsonb_typeof(p_state->'night') is distinct from 'boolean' then return 'night_not_boolean'; end if;
+
+  if p_state->'sound' is null then return 'sound_missing'; end if;
+  if jsonb_typeof(p_state->'sound') is distinct from 'boolean' then return 'sound_not_boolean'; end if;
+
+  if p_state->'savedAt' is null then return 'saved_at_missing'; end if;
+  if jsonb_typeof(p_state->'savedAt') is distinct from 'number' then return 'saved_at_not_number'; end if;
+  v_num := (p_state->>'savedAt')::numeric;
+  if v_num < 0 or v_num > 4102444800000 then return 'saved_at_out_of_range'; end if;
 
   for v_fish in select value from jsonb_array_elements(p_state->'fish') loop
-    if jsonb_typeof(v_fish) <> 'object' then return 'fish_not_object'; end if;
+    if jsonb_typeof(v_fish) is distinct from 'object' then return 'fish_not_object'; end if;
 
-    if jsonb_typeof(v_fish->'id') <> 'string'
-       or length(v_fish->>'id') < 1
-       or length(v_fish->>'id') > 100 then
-      return 'fish_id_invalid';
-    end if;
+    if v_fish->'id' is null then return 'fish_id_missing'; end if;
+    if jsonb_typeof(v_fish->'id') is distinct from 'string' then return 'fish_id_invalid'; end if;
+    v_id := v_fish->>'id';
+    if length(v_id) < 1 or length(v_id) > 100 then return 'fish_id_invalid'; end if;
+    -- 重复 id 会让「按 id 定位某条鱼」的客户端逻辑指向不确定对象，必须拒绝。
+    if v_id = any(v_ids) then return 'fish_id_duplicated'; end if;
+    v_ids := v_ids || v_id;
 
-    if jsonb_typeof(v_fish->'name') <> 'string' or length(v_fish->>'name') > 16 then
-      return 'fish_name_invalid';
-    end if;
+    if v_fish->'name' is null then return 'fish_name_missing'; end if;
+    if jsonb_typeof(v_fish->'name') is distinct from 'string' then return 'fish_name_invalid'; end if;
+    if length(v_fish->>'name') > 16 then return 'fish_name_invalid'; end if;
 
-    v_species := case when jsonb_typeof(v_fish->'species') = 'number' then (v_fish->>'species')::numeric end;
-    if v_species is null or v_species <> trunc(v_species) or v_species < 0 or v_species > 3 then
-      return 'fish_species_out_of_range';
-    end if;
+    if v_fish->'species' is null then return 'fish_species_missing'; end if;
+    if jsonb_typeof(v_fish->'species') is distinct from 'number' then return 'fish_species_invalid'; end if;
+    v_num := (v_fish->>'species')::numeric;
+    if v_num <> trunc(v_num) or v_num < 0 or v_num > 3 then return 'fish_species_out_of_range'; end if;
 
-    v_born := case when jsonb_typeof(v_fish->'born') = 'number' then (v_fish->>'born')::numeric end;
+    if v_fish->'born' is null then return 'fish_born_missing'; end if;
+    if jsonb_typeof(v_fish->'born') is distinct from 'number' then return 'fish_born_invalid'; end if;
+    v_num := (v_fish->>'born')::numeric;
     -- 允许 0（历史存档）；上限 2100-01-01，防止客户端把时间戳放大到失控值。
-    if v_born is null or v_born < 0 or v_born > 4102444800000 then
-      return 'fish_born_out_of_range';
-    end if;
+    if v_num < 0 or v_num > 4102444800000 then return 'fish_born_out_of_range'; end if;
 
-    v_growth := case when jsonb_typeof(v_fish->'growth') = 'number' then (v_fish->>'growth')::numeric end;
-    if v_growth is null or v_growth < 0 or v_growth > 1 then
-      return 'fish_growth_out_of_range';
-    end if;
+    if v_fish->'growth' is null then return 'fish_growth_missing'; end if;
+    if jsonb_typeof(v_fish->'growth') is distinct from 'number' then return 'fish_growth_invalid'; end if;
+    v_num := (v_fish->>'growth')::numeric;
+    if v_num < 0 or v_num > 1 then return 'fish_growth_out_of_range'; end if;
 
-    v_meals := case when jsonb_typeof(v_fish->'meals') = 'number' then (v_fish->>'meals')::numeric end;
-    if v_meals is null or v_meals < 0 or v_meals <> trunc(v_meals) or v_meals > 1000000 then
-      return 'fish_meals_out_of_range';
-    end if;
+    if v_fish->'meals' is null then return 'fish_meals_missing'; end if;
+    if jsonb_typeof(v_fish->'meals') is distinct from 'number' then return 'fish_meals_invalid'; end if;
+    v_num := (v_fish->>'meals')::numeric;
+    if v_num < 0 or v_num <> trunc(v_num) or v_num > 1000000 then return 'fish_meals_out_of_range'; end if;
   end loop;
 
   return null;
 end $$;
 
 comment on function public.mofish_state_error(jsonb) is
-  'MoFish 存档结构校验（服务端权威）。返回 null 表示合法，否则返回稳定错误码。';
+  'MoFish 存档结构校验（服务端权威）。返回 null 表示合法，否则返回稳定错误码。'
+  '每个字段都做存在性与类型检查（缺失字段是 NULL，不能用 <> 判空），并拒绝重复的鱼 id。';
 
 -- ---------------------------------------------------------------- 数据表
 
@@ -111,51 +125,52 @@ create table if not exists public.aquariums (
 );
 
 comment on table public.aquariums is
-  'MoFish 云端鱼缸存档。阶段 A：一个账号一条鱼缸；阶段 B 引入 aquarium_members 时需同步调整唯一索引与策略。';
+  'MoFish 云端鱼缸存档。阶段 A：一个账号一条鱼缸；阶段 B 引入 aquarium_members 时需同步调整唯一索引与策略。'
+  '写入只允许通过 ensure_aquarium / save_aquarium / settle_growth 三个函数。';
 comment on column public.aquariums.revision is
   '每次成功写入 +1；客户端必须带 expected_revision 做条件更新，冲突时返回当前值。';
 comment on column public.aquariums.last_growth_at is
   '离线成长结算锚点（服务端时间）。只由 settle_growth 推进，save_aquarium 不改动它。';
 
 -- 阶段 A：每个账号恰好一条鱼缸，使首次登录的开缸动作可幂等重放。
--- 阶段 B（多人共享）必须改为 (owner_id, id) 之外的成员关系表，届时删除本索引并新增迁移。
+-- 阶段 B（多人共享）必须改为成员关系表，届时新增迁移删除本索引。
 create unique index if not exists aquariums_owner_phase_a_uidx
   on public.aquariums (owner_id);
 
 create index if not exists aquariums_owner_updated_idx
   on public.aquariums (owner_id, updated_at desc);
 
--- ---------------------------------------------------------------- RLS
+-- ---------------------------------------------------------------- 权限边界
 
 alter table public.aquariums enable row level security;
+
+-- 只保留「读自己的那一行」：写入一律走受控函数，因此不再需要 insert/update/delete 策略。
+-- 这些策略即使存在也无效（下表没有任何写权限），删掉是为了避免误以为可以直接写表。
+drop policy if exists aquariums_insert_own on public.aquariums;
+drop policy if exists aquariums_update_own on public.aquariums;
+drop policy if exists aquariums_delete_own on public.aquariums;
 
 drop policy if exists aquariums_select_own on public.aquariums;
 create policy aquariums_select_own on public.aquariums
   for select to authenticated
   using (owner_id = auth.uid());
 
-drop policy if exists aquariums_insert_own on public.aquariums;
-create policy aquariums_insert_own on public.aquariums
-  for insert to authenticated
-  with check (owner_id = auth.uid());
-
-drop policy if exists aquariums_update_own on public.aquariums;
-create policy aquariums_update_own on public.aquariums
-  for update to authenticated
-  using (owner_id = auth.uid())
-  with check (owner_id = auth.uid());
-
-drop policy if exists aquariums_delete_own on public.aquariums;
-create policy aquariums_delete_own on public.aquariums
-  for delete to authenticated
-  using (owner_id = auth.uid());
-
+-- 关键：撤销 authenticated 的表级写权限。RLS 只做行归属判断，挡不住「直接调表改写 revision」。
 revoke all on public.aquariums from anon;
 revoke all on public.aquariums from public;
-grant select, insert, update, delete on public.aquariums to authenticated;
+revoke all on public.aquariums from authenticated;
+grant select on public.aquariums to authenticated;
+
+-- Supabase 默认已把 public schema 的 USAGE 授予 authenticated；这里显式再授权一次，
+-- 让迁移在原生 Postgres（15+ 不再默认给 PUBLIC CREATE/USAGE）上也能独立执行。
+-- 只给 USAGE，表权限仍然只有 SELECT。
+grant usage on schema public to authenticated;
 
 -- ---------------------------------------------------------------- 编写鱼缸：原子 revision 条件更新
 
+-- SECURITY DEFINER 说明：函数以属主（应用迁移的角色，通常是 postgres）身份执行，因此能够写入
+-- 已被收回写权限的表；作为交换，函数内部必须自己完成鉴权与归属过滤，不能依赖 RLS。
+-- search_path 固定为 public, pg_temp 且所有对象都带 schema 限定，避免被劫持。
 create or replace function public.save_aquarium(
   p_id                uuid,
   p_expected_revision bigint,
@@ -164,7 +179,7 @@ create or replace function public.save_aquarium(
 )
 returns table (status text, revision bigint, updated_at timestamptz, error_code text)
 language plpgsql
-security invoker
+security definer
 set search_path = public, pg_temp
 as $$
 declare
@@ -202,7 +217,8 @@ begin
     return;
   end if;
 
-  -- 条件更新：revision 不匹配即 0 行受影响，构成原子冲突检测（不覆盖他人/自己的新版本）。
+  -- 条件更新：owner 与 revision 同时匹配才写入，两者都由数据库判断，构不成「先读后写」的竞态。
+  -- revision 与 last_growth_at 都不接受客户端传入：revision 只能由服务端自增。
   update public.aquariums a
      set state_json    = p_state,
          state_version = p_state_version,
@@ -218,8 +234,8 @@ begin
     return;
   end if;
 
-  -- 区分「不存在/不属于我」与「版本冲突」。RLS 保证这里只会读到自己的行。
-  select a.revision into v_current from public.aquariums a where a.id = p_id;
+  -- 区分「不存在/不属于我」与「版本冲突」；两种情况都只在自己的行里查，不泄露他人的 aquarium id。
+  select a.revision into v_current from public.aquariums a where a.id = p_id and a.owner_id = v_uid;
 
   if v_current is null then
     return query select 'not_found', null::bigint, null::timestamptz, 'aquarium_not_found'::text;
@@ -229,7 +245,8 @@ begin
 end $$;
 
 comment on function public.save_aquarium(uuid, bigint, jsonb, integer) is
-  '原子保存：仅当 revision 匹配且 owner=auth.uid() 时写入。返回 ok/conflict/not_found/invalid_state/invalid_argument/not_authenticated。';
+  '原子保存（SECURITY DEFINER）：仅当 revision 匹配且 owner=auth.uid() 时写入，revision 由服务端自增。'
+  '返回 ok/conflict/not_found/invalid_state/invalid_argument/not_authenticated。';
 
 -- ---------------------------------------------------------------- 开缸：幂等
 
@@ -240,7 +257,7 @@ create or replace function public.ensure_aquarium(
 returns table (status text, aquarium_id uuid, revision bigint, state_json jsonb,
                last_growth_at timestamptz, created boolean, error_code text)
 language plpgsql
-security invoker
+security definer
 set search_path = public, pg_temp
 as $$
 declare
@@ -287,9 +304,10 @@ begin
 end $$;
 
 comment on function public.ensure_aquarium(jsonb, integer) is
-  '幂等开缸：不存在则按给定初始存档创建（created=true），存在则返回现有鱼缸（created=false）。重复调用不产生第二条记录。';
+  '幂等开缸（SECURITY DEFINER）：不存在则按给定初始存档创建（created=true），存在则返回现有鱼缸（created=false）。'
+  '重复调用不产生第二条记录。';
 
--- ---------------------------------------------------------------- 成长结算：服务端时间，幂等
+-- ---------------------------------------------------------------- 成长结算：服务端时间，幂等且并发安全
 
 create or replace function public.settle_growth(
   p_id          uuid,
@@ -298,7 +316,7 @@ create or replace function public.settle_growth(
 returns table (status text, revision bigint, credited_seconds integer,
                state_json jsonb, last_growth_at timestamptz, error_code text)
 language plpgsql
-security invoker
+security definer
 set search_path = public, pg_temp
 as $$
 declare
@@ -316,7 +334,15 @@ begin
     return;
   end if;
 
-  select a.* into v_row from public.aquariums a where a.id = p_id;
+  -- 行锁（for update）：并发调用时后一个事务会阻塞到前一个提交，之后读到的就是已经推进过的锚点，
+  -- 因此不存在「两个会话读到同一旧锚点、各自加一次成长」的重复奖励。
+  -- 读取本身就带 owner 过滤：不属于自己的鱼缸按 not_found 处理，不泄露其是否存在。
+  select a.* into v_row
+    from public.aquariums a
+   where a.id = p_id
+     and a.owner_id = v_uid
+     for update;
+
   if not found then
     return query select 'not_found', null::bigint, 0, null::jsonb, null::timestamptz, 'aquarium_not_found'::text;
     return;
@@ -360,6 +386,7 @@ begin
          last_growth_at = now(),
          updated_at     = now()
    where a.id = p_id
+     and a.owner_id = v_uid
    returning a.revision, a.state_json, a.last_growth_at
         into v_row.revision, v_row.state_json, v_row.last_growth_at;
 
@@ -372,19 +399,24 @@ begin
 end $$;
 
 comment on function public.settle_growth(uuid, integer) is
-  '按服务端时间结算离线成长（默认上限 24 小时=86400 秒）。整秒结算且锚点推进到 now()，重复调用不重复奖励。';
+  '按服务端时间结算离线成长（SECURITY DEFINER，默认上限 24 小时=86400 秒）。'
+  'SELECT ... FOR UPDATE 保证并发调用不重复奖励；锚点推进到 now()。';
 
--- ---------------------------------------------------------------- 权限
+-- ---------------------------------------------------------------- 函数权限
 
--- 四个函数都只授予 authenticated：匿名 key 不能执行任何写入或读取逻辑。
+-- 只授予 authenticated：anon key 不能执行任何读写逻辑。
+-- mofish_state_error 不对客户端开放：它是内部校验函数，只被上面三个 SECURITY DEFINER 函数调用
+-- （以属主身份执行时不需要额外的 EXECUTE 授权）。
 revoke all on function public.mofish_state_error(jsonb) from public;
+revoke all on function public.mofish_state_error(jsonb) from anon;
+revoke all on function public.mofish_state_error(jsonb) from authenticated;
 revoke all on function public.save_aquarium(uuid, bigint, jsonb, integer) from public;
+revoke all on function public.save_aquarium(uuid, bigint, jsonb, integer) from anon;
 revoke all on function public.ensure_aquarium(jsonb, integer) from public;
+revoke all on function public.ensure_aquarium(jsonb, integer) from anon;
 revoke all on function public.settle_growth(uuid, integer) from public;
+revoke all on function public.settle_growth(uuid, integer) from anon;
 
--- mofish_state_error 必须授权给 authenticated：save_aquarium / ensure_aquarium 是
--- SECURITY INVOKER，调用者需要该函数的 EXECUTE 权限（撤销 PUBLIC 后必须显式补回）。
-grant execute on function public.mofish_state_error(jsonb) to authenticated;
 grant execute on function public.save_aquarium(uuid, bigint, jsonb, integer) to authenticated;
 grant execute on function public.ensure_aquarium(jsonb, integer) to authenticated;
 grant execute on function public.settle_growth(uuid, integer) to authenticated;

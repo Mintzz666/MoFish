@@ -15,7 +15,7 @@ import path from 'node:path';
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const MIGRATIONS_DIR = path.resolve(here, '../../supabase/migrations');
 
-const SUPABASE_EMULATION = `
+export const SUPABASE_EMULATION = `
 create role anon noinherit;
 create role authenticated noinherit;
 create role service_role noinherit bypassrls;

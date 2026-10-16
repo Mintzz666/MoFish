@@ -27,13 +27,15 @@ export function createCloudStack({
     fetchImpl,
     timeoutMs,
     // 取当前访问令牌：会话已过期时也返回旧令牌，由 api 层收到 401 后刷新一次再重试。
+    // transient 区分「暂时拿不到令牌（离线）」与「未登录」：前者必须保留本机改动。
     getAccessToken: async () => {
       const result = await auth.getSession({ allowRefresh: false });
-      return result.session?.access_token ?? null;
+      return { token: result.session?.access_token ?? null, transient: false };
     },
     refreshAccessToken: async () => {
       const refreshed = await auth.refresh();
-      return refreshed.ok ? refreshed.session.access_token : null;
+      if (refreshed.ok) return { token: refreshed.session.access_token, transient: false };
+      return { token: null, transient: Boolean(refreshed.transient) };
     }
   });
 

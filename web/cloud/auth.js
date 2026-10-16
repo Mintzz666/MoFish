@@ -123,10 +123,18 @@ export function parseAuthCallback({ hash = '', search = '' } = {}) {
   };
 }
 
-/** 会话形状：{ access_token, refresh_token, expires_at(秒), user:{id,email,email_confirmed_at} } */
+/**
+ * 会话形状：{ access_token, refresh_token, expires_at(秒), user:{id,email,email_confirmed_at} }
+ *
+ * 重要：没有 user.id 的响应一律视为无效会话（返回 null）。邮件回调只带回令牌、
+ * 不带用户信息，必须先用 GET /auth/v1/user 换回用户身份再调用本函数，否则会出现
+ * 「界面显示已登录、同步引擎却因为没有 userId 而退回游客模式」的不一致状态。
+ */
 export function normalizeSession(data, nowMs) {
   if (!data || typeof data !== 'object' || !data.access_token) return null;
   const user = data.user && typeof data.user === 'object' ? data.user : {};
+  const userId = typeof user.id === 'string' ? user.id.trim() : '';
+  if (!userId) return null;
   const expiresAt = Number.isFinite(Number(data.expires_at))
     ? Number(data.expires_at)
     : Math.floor(nowMs / 1000) + (Number(data.expires_in) > 0 ? Number(data.expires_in) : 3600);
@@ -135,7 +143,7 @@ export function normalizeSession(data, nowMs) {
     refresh_token: typeof data.refresh_token === 'string' ? data.refresh_token : '',
     expires_at: expiresAt,
     user: {
-      id: typeof user.id === 'string' ? user.id : '',
+      id: userId,
       email: typeof user.email === 'string' ? user.email : '',
       email_confirmed_at: user.email_confirmed_at || user.confirmed_at || null
     }
@@ -145,6 +153,21 @@ export function normalizeSession(data, nowMs) {
 export function sessionIsFresh(session, nowMs, skewSeconds = 60) {
   if (!session || !session.access_token) return false;
   return session.expires_at - skewSeconds > Math.floor(nowMs / 1000);
+}
+
+/**
+ * 这次失败是「暂时连不上」还是「凭据真的失效」？
+ * 网络错误（status 0 且带 network 标记）、5xx、429 属于前者：此时清会话会把用户
+ * 直接踢下线、连离线缓存都读不出来，是最容易踩的坑（评审 P2-8）。
+ */
+export function isTransientAuthFailure(res) {
+  if (!res) return false;
+  const status = Number(res.status || 0);
+  if (status === 0) return true;                 // 网络不可达 / 超时
+  if (status === 429) return true;               // 限流
+  if (status >= 500) return true;                // 服务端临时故障
+  const code = res.error?.code || '';
+  return code === 'network_unreachable' || code === 'timeout' || code === 'server_error' || code === 'rate_limited';
 }
 
 /**
@@ -231,10 +254,17 @@ export function createAuthClient({
       return { ok: true, session: res.session };
     },
 
-    /** 用 refresh_token 换新会话；并发调用共享同一次请求。 */
+    /**
+     * 用 refresh_token 换新会话；并发调用共享同一次请求。
+     *
+     * 「刷新失败」有两种性质完全不同的情况，必须分开处理（评审 P2-8）：
+     *  - 凭据真的失效（4xx：invalid_grant / refresh_token_not_found）→ 清除会话，要求重新登录；
+     *  - 暂时连不上（网络错误 / 5xx / 429）→ **保留**会话与本地缓存，只报告可重试的失败，
+     *    否则用户一断网就会发现登录态被清掉、账号缓存被当成「别人的数据」。
+     */
     async refresh(refreshToken) {
       const token = refreshToken || store?.readSession()?.refresh_token;
-      if (!token) return { ok: false, error: { code: 'no_refresh_token', message: '登录状态已失效，请重新登录', retryable: false } };
+      if (!token) return { ok: false, transient: false, error: { code: 'no_refresh_token', message: '登录状态已失效，请重新登录', retryable: false } };
       if (refreshInFlight) return refreshInFlight;
       refreshInFlight = (async () => {
         const res = await request('/auth/v1/token', {
@@ -242,8 +272,16 @@ export function createAuthClient({
           body: { refresh_token: token }
         });
         if (!res.ok || !res.session) {
+          if (isTransientAuthFailure(res)) {
+            return {
+              ok: false,
+              transient: true,
+              status: res.status,
+              error: res.error || { code: 'offline', message: '暂时无法连接云端，登录状态已保留', retryable: true }
+            };
+          }
           store?.clearSession();
-          return { ok: false, error: res.error || { code: 'refresh_failed', message: '登录状态已失效，请重新登录', retryable: false } };
+          return { ok: false, transient: false, error: res.error || { code: 'refresh_failed', message: '登录状态已失效，请重新登录', retryable: false } };
         }
         store?.writeSession(res.session);
         return { ok: true, session: res.session };
@@ -301,26 +339,67 @@ export function createAuthClient({
       return { ok: true };
     },
 
-    /** 读会话：过期则自动刷新；刷新失败即清除并视为未登录。 */
+    /**
+     * 读会话：过期则自动刷新。
+     *
+     * reason 取值与含义（调用方必须区分，评审 P2-8）：
+     *   'fresh'        —— 可用
+     *   'refreshed'    —— 过期但已刷新成功
+     *   'expired'      —— 过期且明确要求不刷新
+     *   'offline'      —— 网络/服务端暂时不可用：**凭据与会话仍保留**（session 字段照常返回），
+     *                    调用方应进入离线状态，稍后自动重试，而不是把用户踢下线
+     *   'invalid_grant'—— refresh token 真的失效，会话已被清除，需要重新登录
+     *   'no_session'   —— 本机没有会话
+     */
     async getSession({ allowRefresh = true } = {}) {
       const session = store?.readSession();
       if (!session) return { ok: false, session: null, reason: 'no_session' };
-      if (sessionIsFresh(session, now())) return { ok: true, session };
+      if (sessionIsFresh(session, now())) return { ok: true, session, reason: 'fresh' };
       if (!allowRefresh) return { ok: false, session, reason: 'expired' };
       const refreshed = await client.refresh(session.refresh_token);
-      if (!refreshed.ok) return { ok: false, session: null, reason: 'refresh_failed', error: refreshed.error };
-      return { ok: true, session: refreshed.session };
+      if (refreshed.ok) return { ok: true, session: refreshed.session, reason: 'refreshed' };
+      if (refreshed.transient) {
+        const kept = store?.readSession() || session;
+        return { ok: false, session: kept, reason: 'offline', error: refreshed.error };
+      }
+      return { ok: false, session: null, reason: 'invalid_grant', error: refreshed.error };
     },
 
-    /** 保存邮件回调带回的会话（验证/重置链接）。 */
-    acceptCallbackSession(callback) {
-      if (!callback || callback.kind !== 'session') return { ok: false, error: { code: 'bad_callback', message: '链接无效', retryable: false } };
+    /**
+     * 保存邮件回调带回的会话（邮箱验证 / 重置密码链接）。
+     *
+     * 回调的 URL 片段里只有令牌，没有用户信息。必须先向认证服务确认身份
+     * （GET /auth/v1/user），否则会得到一份 user.id 为空的会话：界面以为已登录，
+     * 同步引擎却因为没有 userId 而退回游客模式（评审 P1-4）。
+     */
+    async acceptCallbackSession(callback) {
+      if (!callback || callback.kind !== 'session' || !callback.accessToken) {
+        return { ok: false, error: { code: 'bad_callback', message: '链接无效或已过期', retryable: false } };
+      }
+      const probe = await request('/auth/v1/user', {
+        method: 'GET',
+        token: callback.accessToken,
+        keepSession: false
+      });
+      if (!probe.ok) {
+        return {
+          ok: false,
+          error: probe.error || {
+            code: 'callback_verify_failed',
+            message: '链接已失效，请重新申请邮件',
+            retryable: probe.status === 0
+          }
+        };
+      }
       const session = normalizeSession({
         access_token: callback.accessToken,
         refresh_token: callback.refreshToken,
-        expires_in: callback.expiresIn
+        expires_in: callback.expiresIn,
+        user: probe.data
       }, now());
-      if (!session) return { ok: false, error: { code: 'bad_callback', message: '链接无效', retryable: false } };
+      if (!session) {
+        return { ok: false, error: { code: 'bad_callback', message: '链接没有对应到有效账号，请重新申请邮件', retryable: false } };
+      }
       store?.writeSession(session);
       return { ok: true, session, type: callback.type };
     }

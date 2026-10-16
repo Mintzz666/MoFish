@@ -10,9 +10,14 @@
     "build": "node build.mjs",
     "test:cloud": "node scripts/cloud-smoke.mjs",
     "test:e2e": "node tests/e2e/cloud-e2e.mjs",
+    "test:concurrency": "node --test tests/sql/concurrency.test.js",
     "release": "node scripts/release.mjs"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.5.10"
+    "@electric-sql/pglite": "^0.5.10",
+    "pg": "^8.23.1"
+  },
+  "optionalDependencies": {
+    "embedded-postgres": "^18.4.0-beta.17"
   }
 }

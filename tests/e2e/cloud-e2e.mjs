@@ -291,6 +291,79 @@ async function main() {
   const cBackups = await deviceC.evaluate(`(()=>{let n=0;for(let i=0;i<localStorage.length;i++){if(String(localStorage.key(i)).includes('mofish.backup.'))n++;}return n;})()`);
   check('放弃的本机版本已归档为备份（可导出）', cBackups >= 1, `备份数=${cBackups}`);
 
+  // ---- 场景 11：邮箱验证回调必须真正登录（评审 P1-4）----
+  const deviceD = await newContextPage(browserWs, 'D');
+  await deviceD.setViewport(1440, 900, false);
+  await deviceD.goto(preview.url + '/');
+  await deviceD.front();
+  await deviceD.click('#account-button');
+  await deviceD.click('[data-auth-tab="signup"]');
+  await deviceD.type('#auth-email', 'carol@example.com');
+  await deviceD.type('#auth-password', 'goodpassword123');
+  await deviceD.click('#auth-sign-up');
+  await sleep(700);
+  await deviceD.evaluate(`document.getElementById('account-dialog').close()`);
+
+  const carol = fake.users.get('carol@example.com');
+  carol.confirmed = true;
+  const carolSession = fake.issueSession(carol);
+  // 注意：只改 hash 属于同文档导航，浏览器不会重新加载页面（也就不会触发回调处理）。
+  // 真实用户点邮件链接一定是新开文档，这里用查询参数强制一次真实导航来保持一致。
+  const verifyUrl = `${preview.url}/?mail=verify#access_token=${carolSession.access_token}&refresh_token=${carolSession.refresh_token}&type=signup&expires_in=3600`;
+  await deviceD.goto(verifyUrl);
+  await sleep(1800);
+
+  const dChip = await deviceD.evaluate(`document.getElementById('cloud-status').textContent`);
+  const dDialogOpen = await deviceD.evaluate(`document.getElementById('account-dialog').open`);
+  const dNotice = await deviceD.evaluate(`document.getElementById('account-notice').textContent`);
+  const dHashCleared = await deviceD.evaluate(`!location.hash.includes('access_token')`);
+  const carolRow = fake.aquariums.get(carol.id);
+  check('邮箱验证回调后真正进入已登录状态（不是游客）', dChip === '已同步', `chip=${dChip}`);
+  check('验证回调后云端建立了该账号的鱼缸', Boolean(carolRow), `aquarium=${carolRow?.id}`);
+  check('验证回调会自动打开账号面板并给出结果', dDialogOpen === true && /验证完成|已登录/.test(dNotice), `notice=${dNotice}`);
+  check('回调令牌已从地址栏清除', dHashCleared === true);
+  await deviceD.shot('07-verify-callback.png');
+
+  // ---- 场景 12：重置密码回调要显示改密面板，并且跨刷新保持（评审 P1-4）----
+  const carolSession2 = fake.issueSession(carol);
+  const recoveryUrl = `${preview.url}/?mail=recovery#access_token=${carolSession2.access_token}&refresh_token=${carolSession2.refresh_token}&type=recovery&expires_in=3600`;
+  await deviceD.goto(recoveryUrl);
+  await sleep(1800);
+
+  const resetVisible = await deviceD.evaluate(`!document.getElementById('reset-panel').hidden`);
+  const sessionHidden = await deviceD.evaluate(`document.getElementById('session-panel').hidden`);
+  const resetHint = await deviceD.evaluate(`document.getElementById('reset-hint').textContent`);
+  check('重置密码回调自动打开改密面板', resetVisible === true, `hint=${resetHint}`);
+  check('改密期间不显示普通账号面板（避免被顶掉）', sessionHidden === true);
+  await deviceD.shot('08-recovery-callback.png');
+
+  // 关掉再手动打开：面板不能被「已登录」视图顶掉
+  await deviceD.evaluate(`document.getElementById('account-dialog').close()`);
+  await deviceD.front();
+  await deviceD.click('#account-button');
+  const resetVisibleAgain = await deviceD.evaluate(`!document.getElementById('reset-panel').hidden`);
+  check('手动打开账号面板时改密面板仍然可见', resetVisibleAgain === true);
+  await deviceD.evaluate(`document.getElementById('account-dialog').close()`);
+
+  // 刷新页面（不带回调参数）：改密面板仍然要出现
+  await deviceD.goto(preview.url + '/');
+  await sleep(1500);
+  await deviceD.front();
+  await deviceD.click('#account-button');
+  const resetAfterReload = await deviceD.evaluate(`!document.getElementById('reset-panel').hidden`);
+  check('刷新页面后仍保留待改密状态（不再丢失链接状态）', resetAfterReload === true);
+
+  await deviceD.type('#reset-password', 'brandnewpassword1');
+  await deviceD.click('#reset-save');
+  await sleep(1600);
+  const passwordChanged = fake.users.get('carol@example.com').password === 'brandnewpassword1';
+  const dChipAfterReset = await deviceD.evaluate(`document.getElementById('cloud-status').textContent`);
+  const resetHiddenAfter = await deviceD.evaluate(`document.getElementById('reset-panel').hidden`);
+  const signInAgain = await deviceD.evaluate(`(async()=>{const r=await fetch('${fakeServer.url}/auth/v1/token?grant_type=password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'carol@example.com',password:'brandnewpassword1'})});return r.status;})()`);
+  check('改密确实写入了服务端', passwordChanged === true);
+  check('改密后新密码可以登录', signInAgain === 200, `HTTP ${signInAgain}`);
+  check('改密后回到已登录状态并收起改密面板', dChipAfterReset === '已同步' && resetHiddenAfter === true, `chip=${dChipAfterReset}`);
+
   // ---- 场景 7：离线改动与重连 ----
   // 账号面板是模态对话框，会挡住页面点击；先关掉再操作鱼缸。
   await deviceC.evaluate(`document.getElementById('account-dialog').open && document.getElementById('account-dialog').close()`);

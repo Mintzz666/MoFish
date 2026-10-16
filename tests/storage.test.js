@@ -68,14 +68,14 @@ test('未同步副本与元数据也按账号隔离', () => {
   store.writeMeta(ALICE, AQUARIUM_A, { revision: 7, lastGrowthAt: 123 });
   store.writePending(BOB, AQUARIUM_B, tankWith('bob 待同步'));
 
-  assert.equal(store.readPending(ALICE, AQUARIUM_A).fish[0].name, '待同步');
-  assert.equal(store.readPending(BOB, AQUARIUM_B).fish[0].name, 'bob 待同步');
+  assert.equal(store.readPending(ALICE, AQUARIUM_A).state.fish[0].name, '待同步');
+  assert.equal(store.readPending(BOB, AQUARIUM_B).state.fish[0].name, 'bob 待同步');
   assert.equal(store.readPending(ALICE, AQUARIUM_B), null);
   assert.deepEqual(store.readMeta(ALICE, AQUARIUM_A), { revision: 7, lastGrowthAt: 123 });
 
   store.clearPending(ALICE, AQUARIUM_A);
   assert.equal(store.readPending(ALICE, AQUARIUM_A), null);
-  assert.equal(store.readPending(BOB, AQUARIUM_B).fish[0].name, 'bob 待同步', '清一个账号不影响另一个');
+  assert.equal(store.readPending(BOB, AQUARIUM_B).state.fish[0].name, 'bob 待同步', '清一个账号不影响另一个');
 });
 
 test('当前鱼缸指针：离线时用来找回本地缓存', () => {

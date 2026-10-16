@@ -54,11 +54,31 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
     backupExport: $('backup-export'),
     newPassword: $('reset-password'),
     savePassword: $('reset-save'),
+    resetLater: $('reset-later'),
     resetHint: $('reset-hint')
   };
 
   let activeTab = 'signin';
   let notice = null;
+  // 界面操作代次：登录/退出/回调都会 +1，晚到的响应若已经过期就丢弃，
+  // 避免「换号后旧请求把上一个账号的状态写进界面」。
+  let opToken = 0;
+  // 'auto' = 按登录状态显示；'reset' = 正在处理重置密码链接（会一直保留到改密成功或用户推迟）。
+  let view = 'auto';
+
+  function isStale(token) { return token !== opToken; }
+
+  function readFlow() {
+    try { return store.readAuthFlow?.() || null; } catch { return null; }
+  }
+
+  // 刷新页面后仍要回到「请设置新密码」：把待处理的链接状态记在本机（评审 P1-4）。
+  if (readFlow()?.type === 'recovery') view = 'reset';
+
+  function openDialog() {
+    if (!els.dialog) return;
+    if (!els.dialog.open) els.dialog.showModal();
+  }
 
   function setNotice(text, kind = 'info') {
     notice = text ? { text, kind } : null;
@@ -135,9 +155,18 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
   function renderSections() {
     const snap = engine.snapshot;
     const signedIn = Boolean(snap.user);
-    if (els.authPanel) els.authPanel.hidden = signedIn;
-    if (els.sessionPanel) els.sessionPanel.hidden = !signedIn;
-    if (els.resetPanel) els.resetPanel.hidden = true;
+    const showReset = view === 'reset';
+    // 重置密码期间：只显示改密面板（登录/注册表单与账号面板都让位），
+    // 但会话本身是有效的，所以仍然保留用户信息与冲突区，改完密码即可继续。
+    if (els.authPanel) els.authPanel.hidden = showReset || signedIn;
+    if (els.sessionPanel) els.sessionPanel.hidden = showReset || !signedIn;
+    if (els.resetPanel) els.resetPanel.hidden = !showReset;
+    if (showReset && els.resetHint) {
+      const flow = readFlow();
+      els.resetHint.textContent = flow?.email
+        ? `为 ${flow.email} 设置新密码（至少 6 位）。链接对应的登录状态已经生效。`
+        : '请设置一个新密码（至少 6 位）。';
+    }
 
     if (els.cloudOff) {
       els.cloudOff.hidden = cloudReady;
@@ -149,11 +178,12 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
       if (el) el.disabled = !cloudReady;
     }
 
-    if (signedIn) {
+    if (signedIn && !showReset) {
       els.sessionEmail.textContent = snap.user.email;
       const parts = [describeStatus(snap.status)];
       if (snap.revision) parts.push(`revision ${snap.revision}`);
       if (snap.status === STATUS.OFFLINE) parts.push('联网后会自动同步');
+      if (snap.dirty && snap.status !== STATUS.OFFLINE) parts.push('本机有未上传的改动');
       els.sessionDetail.textContent = parts.join(' · ');
       if (els.syncNow) els.syncNow.disabled = snap.status === STATUS.SYNCING || Boolean(snap.conflict);
     }
@@ -190,9 +220,11 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
     const local = validateCredentials({ email, password });
     if (local) { setNotice(local.message, 'error'); return; }
 
+    const token = ++opToken;
     if (els.signIn) els.signIn.disabled = true;
     setNotice('正在登录…');
     const res = await guard(() => auth.signIn({ email, password }));
+    if (isStale(token)) return;                  // 期间已退出或换了账号：丢弃这次响应
     if (els.signIn) els.signIn.disabled = !cloudReady;
     if (!res || !res.ok) {
       const code = res?.error?.code;
@@ -205,6 +237,9 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
     if (els.password) els.password.value = '';
     setNotice('已登录，正在对齐云端存档…');
     const outcome = await engine.setSession(res.session);
+    if (isStale(token)) return;
+    view = 'auto';
+    store.clearAuthFlow?.();
     onSessionChange(res.session);
     if (outcome?.conflict) setNotice('登录成功，但本机与云端各有一份存档，请选择保留哪一份。', 'warn');
     else if (outcome?.offline) setNotice('已登录，但当前连不上云端，先用本机存档继续。', 'warn');
@@ -219,9 +254,11 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
     const local = validateCredentials({ email, password });
     if (local) { setNotice(local.message, 'error'); return; }
 
+    const token = ++opToken;
     if (els.signUp) els.signUp.disabled = true;
     setNotice('正在创建账号…');
     const res = await guard(() => auth.signUp({ email, password }));
+    if (isStale(token)) return;
     if (els.signUp) els.signUp.disabled = !cloudReady;
     if (!res || !res.ok) {
       setNotice(res?.error?.message || '注册失败', 'error');
@@ -234,6 +271,8 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
       return;
     }
     const outcome = await engine.setSession(res.session);
+    if (isStale(token)) return;
+    view = 'auto';
     onSessionChange(res.session);
     setNotice(outcome?.conflict ? '注册成功，但需要先选择保留哪一份存档。' : '注册成功，云端存档已建立。', 'ok');
     render();
@@ -267,8 +306,11 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
   }
 
   async function doSignOut() {
+    opToken += 1;                       // 让所有在途的登录/回调响应立即作废
     const res = await guard(() => auth.signOut());
     await engine.setSession(null);
+    view = 'auto';
+    store.clearAuthFlow?.();            // 重置链接状态跟着会话一起失效
     onSessionChange(null);
     setNotice(res?.remoteOk === false ? '已在本机退出（远端会话可能仍然有效）。' : '已退出登录，回到本机存档。', 'ok');
     render();
@@ -314,13 +356,20 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
     const password = els.newPassword?.value || '';
     const local = validateCredentials({ email: 'placeholder@example.com', password });
     if (local) { setNotice(local.message, 'error'); return; }
+    const token = ++opToken;
     setNotice('正在设置新密码…');
     const res = await guard(() => auth.updatePassword(password));
+    if (isStale(token)) return;
     if (!res?.ok) { setNotice(res?.error?.message || '设置失败，请重新申请重置邮件', 'error'); return; }
     if (els.newPassword) els.newPassword.value = '';
+    store.clearAuthFlow?.();
+    view = 'auto';
     const session = await auth.getSession();
-    if (session.ok) {
+    if (isStale(token)) return;
+    // 注意：session.session 在「凭据仍在但暂时连不上」时同样存在，此时也应当保持登录态。
+    if (session.session) {
       await engine.setSession(session.session);
+      if (isStale(token)) return;
       onSessionChange(session.session);
       setNotice('密码已更新，并且已登录。', 'ok');
     } else {
@@ -329,44 +378,75 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
     render();
   }
 
-  /** 处理邮件链接带回来的会话或错误（页面加载时调用）。 */
+  /** 「稍后设置」：收起改密面板但保留链接状态，下次打开页面还会提醒。 */
+  function doResetLater() {
+    view = 'auto';
+    render();
+    setNotice('已保留待处理的重置状态，你也可以随时在账号面板里继续设置新密码。', 'warn');
+  }
+
+  /**
+   * 处理邮件链接带回来的会话或错误（页面加载时调用）。
+   *
+   * 两种链接的差别（评审 P1-4）：
+   *  - 邮箱验证：确认身份后直接进入已登录状态；
+   *  - 重置密码：确认身份后还要显示改密面板，并且这个面板要能跨刷新保持，
+   *    打开账号弹窗时也不应该被「已登录」的账号面板顶掉。
+   */
   async function handleCallback(callback) {
+    const token = ++opToken;
     if (callback.kind === 'error') {
       setNotice(callback.errorCode === 'otp_expired'
         ? '链接已失效或已被使用，请重新申请验证/重置邮件。'
         : '链接无法使用，请重新申请邮件。', 'error');
+      openDialog();
+      render();
       return { ok: false };
     }
     if (callback.kind === 'pkce_code') {
       setNotice('这个链接需要在同一浏览器打开（当前流程使用 implicit 验证）。请重新点击邮件里的链接。', 'warn');
+      openDialog();
+      render();
       return { ok: false };
     }
     if (callback.kind !== 'session') return { ok: false };
 
-    const accepted = auth.acceptCallbackSession(callback);
-    if (!accepted.ok) { setNotice('链接无效，请重新申请邮件。', 'error'); return { ok: false }; }
-
-    if (callback.type === 'recovery') {
-      if (els.resetPanel) els.resetPanel.hidden = false;
-      if (els.authPanel) els.authPanel.hidden = true;
-      if (els.resetHint) els.resetHint.textContent = '请设置一个新密码（至少 6 位）。';
-      setNotice('链接有效，请设置新密码。', 'ok');
-      return { ok: true, needsPassword: true };
+    setNotice('正在确认链接…');
+    const accepted = await auth.acceptCallbackSession(callback);
+    if (isStale(token)) return { ok: false, skipped: 'stale' };
+    if (!accepted.ok) {
+      setNotice(accepted.error?.message || '链接无效，请重新申请邮件。', 'error');
+      openDialog();
+      render();
+      return { ok: false };
     }
 
     const outcome = await engine.setSession(accepted.session);
+    if (isStale(token)) return { ok: false, skipped: 'stale' };
     onSessionChange(accepted.session);
-    setNotice(outcome?.conflict
-      ? '邮箱已验证并登录，但请先选择保留哪一份存档。'
-      : '邮箱已验证并登录，存档已对齐。', 'ok');
+
+    if (accepted.type === 'recovery') {
+      view = 'reset';
+      store.writeAuthFlow?.({ type: 'recovery', email: accepted.session.user.email, at: Date.now() });
+      setNotice(outcome?.conflict
+        ? '链接有效，请先设置新密码；设置完成后还需要处理存档冲突。'
+        : '链接有效，请设置新密码。', 'ok');
+    } else {
+      view = 'auto';
+      store.clearAuthFlow?.();
+      setNotice(outcome?.conflict
+        ? '邮箱已验证并登录，但请先选择保留哪一份存档。'
+        : '邮箱验证完成，已登录，存档已对齐。', 'ok');
+    }
+    openDialog();
     render();
-    return { ok: true };
+    return { ok: true, needsPassword: accepted.type === 'recovery' };
   }
 
   function wire() {
     els.button?.addEventListener('click', () => {
       render();
-      els.dialog?.showModal();
+      openDialog();
     });
     for (const el of els.tabs) el.addEventListener('click', () => setTab(el.dataset.authTab));
     els.signIn?.addEventListener('click', doSignIn);
@@ -381,6 +461,7 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
     els.conflictLater?.addEventListener('click', () => doConflict('later'));
     els.backupExport?.addEventListener('click', doBackupExport);
     els.savePassword?.addEventListener('click', doSavePassword);
+    els.resetLater?.addEventListener('click', doResetLater);
     els.password?.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSignIn(); });
     els.email?.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSignIn(); });
   }
@@ -388,5 +469,13 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
   wire();
   render();
 
-  return { render, setNotice, setTab, handleCallback, open: () => { render(); els.dialog?.showModal(); }, get activeTab() { return activeTab; } };
+  return {
+    render,
+    setNotice,
+    setTab,
+    handleCallback,
+    open: () => { render(); openDialog(); },
+    get activeTab() { return activeTab; },
+    get view() { return view; }
+  };
 }

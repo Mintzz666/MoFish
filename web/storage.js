@@ -30,9 +30,12 @@ function safeParse(raw) {
 
 /** 读取一份存档：结构不合法时返回 null，绝不把坏数据交给渲染层。 */
 function readState(get, key) {
-  const parsed = safeParse(get(key));
-  if (!parsed) return null;
-  try { return validate(parsed); } catch { return null; }
+  return validateOrNull(safeParse(get(key)));
+}
+
+function validateOrNull(value) {
+  if (!value || typeof value !== 'object') return null;
+  try { return validate(value); } catch { return null; }
 }
 
 /** 该账号派生出的全部本地键（state / pending / meta / backup / current）。 */
@@ -76,9 +79,27 @@ export function createLocalStore(storage) {
     },
     dropAccountState: (userId, aquariumId) => del(keys.accountState(userId, aquariumId)),
 
-    readPending: (userId, aquariumId) => readState(get, keys.pending(userId, aquariumId)),
-    writePending(userId, aquariumId, state) {
-      return set(keys.pending(userId, aquariumId), JSON.stringify(cloneState(state)));
+    /**
+     * 未同步副本（pending）。除了存档本身，还必须记录它**基于哪个服务端 revision**：
+     * 恢复对账时要靠这个基线判断「云端有没有被别人改过」，否则只能要么盲目覆盖云端、
+     * 要么盲目丢弃本机改动（评审 P1-2）。
+     */
+    readPending(userId, aquariumId) {
+      const parsed = safeParse(get(keys.pending(userId, aquariumId)));
+      if (!parsed) return null;
+      if (parsed.v === 1 && parsed.state) {
+        return { baseRevision: parsed.baseRevision ?? null, state: validateOrNull(parsed.state) };
+      }
+      // 兼容早期只存裸存档的格式
+      return { baseRevision: null, state: validateOrNull(parsed) };
+    },
+    /** 返回 true 表示确实写入了一份未同步副本。 */
+    writePending(userId, aquariumId, state, baseRevision = null) {
+      return set(keys.pending(userId, aquariumId), JSON.stringify({
+        v: 1,
+        baseRevision: baseRevision == null ? null : Number(baseRevision),
+        state: cloneState(state)
+      }));
     },
     clearPending: (userId, aquariumId) => del(keys.pending(userId, aquariumId)),
 
