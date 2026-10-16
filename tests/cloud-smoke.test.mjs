@@ -133,6 +133,40 @@ test('拒绝 opaque secret key，避免把它当 JWT 放入 Authorization', asyn
   assert.ok(!logs.join('\n').includes('sb_secret_test-only'));
 });
 
+test('代理占位凭据由服务端只读预检验证，认证失败或通用 404 时禁止写入', async () => {
+  const placeholder = 'proxy-injected-test-placeholder';
+  for (const [status, body, permitted] of [
+    [404, { error_code: 'user_not_found' }, true],
+    [401, { error_code: 'bad_jwt' }, false],
+    [403, { error_code: 'not_admin' }, false],
+    [404, { code: 'gateway_route_missing' }, false],
+    [200, { id: 'unexpected-existing-user' }, false]
+  ]) {
+    const calls = [];
+    const logs = [];
+    const result = await runCloudSmoke({
+      env: {
+        MOFISH_SUPABASE_URL: 'https://smoke.example.test',
+        MOFISH_SUPABASE_ANON_KEY: 'public-test-key',
+        MOFISH_SMOKE_SERVICE_ROLE_KEY: placeholder
+      },
+      fetchImpl: async (input, init) => {
+        calls.push({ input, init });
+        assert.equal(init.headers.apikey, placeholder);
+        assert.equal(init.headers.Authorization, `Bearer ${placeholder}`);
+        if (init.method === 'GET') return response(status, body);
+        return response(403, { error_code: 'create_blocked_for_test' });
+      },
+      logger: { log: line => logs.push(String(line)) }
+    });
+    assert.equal(result.ok, false);
+    assert.match(calls[0].input, /\/auth\/v1\/admin\/users\/[0-9a-f-]{36}$/);
+    assert.equal(calls[0].init.method, 'GET');
+    assert.equal(calls.some(call => call.init.method === 'POST'), permitted);
+    assert.ok(!logs.join('\n').includes(placeholder));
+  }
+});
+
 test('即使账号创建流程失败，finally 仍删除并确认仅本轮创建的账号', async () => {
   const id = '12345678-1234-4234-8234-123456789abc';
   const logs = [];
@@ -143,6 +177,9 @@ test('即使账号创建流程失败，finally 仍删除并确认仅本轮创建
     const method = init.method || 'GET';
     calls.push({ path: url.pathname, method, headers: init.headers });
 
+    if (method === 'GET' && url.pathname.startsWith('/auth/v1/admin/users/') && !url.pathname.endsWith(id)) {
+      return response(404, { code: 'user_not_found' });
+    }
     if (url.pathname === '/auth/v1/admin/users' && method === 'POST') {
       createCount++;
       if (createCount === 1) {
@@ -187,6 +224,9 @@ test('通用 HTTP 404 不足以宣称清理成功，并报告残留账号 ID', a
   const fetchImpl = async (input, init = {}) => {
     const url = new URL(typeof input === 'string' ? input : input.url);
     const method = init.method || 'GET';
+    if (method === 'GET' && url.pathname.startsWith('/auth/v1/admin/users/') && !url.pathname.endsWith(id)) {
+      return response(404, { code: 'user_not_found' });
+    }
     if (url.pathname === '/auth/v1/admin/users' && method === 'POST') {
       createCount++;
       if (createCount === 1) {

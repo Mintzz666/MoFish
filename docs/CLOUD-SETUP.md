@@ -164,7 +164,11 @@ MOFISH_SMOKE_SERVICE_ROLE_KEY="<service role key，只在本机环境变量里>"
 node scripts/cloud-smoke.mjs
 ```
 
-脚本只接受 Supabase Legacy API Keys 中未过期、`role=service_role` 的 JWT，不支持 `sb_secret_`。
+配置 Supabase Legacy API Keys 中的 `service_role` 密钥，不支持 `sb_secret_`。
+托管云环境可能仅向进程提供代理占位值：脚本不在本地解码判断凭据是否存在，而是沿用代理，
+先只读查询随机不存在的用户 ID；只有 GoTrue 明确返回 `404 user_not_found` 才开始创建临时账号。
+认证拒绝、超时或通用网关 404 都会停止，不输出密钥或服务端原始错误正文。
+在当前 Node 24 云环境运行 `NODE_USE_ENV_PROXY=1 npm run test:cloud`，保留代理及 TLS 校验。
 它会用随机邮箱创建本轮专用临时账号，通过应用的官方 SDK facade 验证登录和刷新，
 再验证第二设备同账号恢复 → 保存 → 旧 revision 冲突 → **另一个账号越权读/改/删被拒** →
 成长记账 → 服务端拒绝非法存档，并在结束时删除及验证本轮创建的账号。
@@ -274,10 +278,9 @@ psql "postgresql://.../postgres" -c "\copy (select * from public.aquariums) to '
 | 存档写不进去、返回 `invalid_state` | 服务端校验比前端严（缺字段/重复鱼 id/越界值都会被拒）。先导出存档对照字段，不要放宽服务端校验 |
 | 部署后样式/脚本没更新 | Service Worker 已缓存旧静态资源；本地开发可在 DevTools → Application → Service Workers 里 unregister，线上刷新两次即可 |
 
-## 6. 本阶段未验证的部分（不要当成已完成）
+## 6. 验证范围与剩余边界
 
-- **真实 Auth / PostgREST HTTP 联调**：真实项目迁移和 13 项云端 SQL 验证已完成；
-  `npm run test:cloud` 尚未执行，真实 JWT 刷新、REST 错误码及网页到 API 的链路仍待验证。
+- **真实 Auth / PostgREST HTTP 联调已完成的范围**：2026-10-16 本轮 `NODE_USE_ENV_PROXY=1 npm run test:cloud` 23/23 通过，含登录/刷新、双会话恢复、保存/revision 冲突、跨账号拒绝、成长、非法存档及两个临时账号删除确认。脚本使用应用 facade，但不证明真实浏览器中的每条 UI 流程；设备离线、冲突备份与换号仍待实测。
 - **真实发信的剩余项**：用户已确认注册验证邮件最终成功；验证链接打开曾较困难。重置邮件、SMTP 配置、模板与白名单仍待完整核验。
 - **Cloudflare 后的完整用户流程**：独立入口已验证；用户确认注册验证和双设备登录/同步成功，线上冲突、离线恢复及换号仍按收口清单验证。
 - **真机浏览器覆盖**：用户已确认电脑/手机同账号同步，但未记录具体设备/浏览器；自动化移动尺寸仍属于 Chrome headless 视口仿真。

@@ -8,6 +8,37 @@
 用户进一步要求双方完成阶段 A，包括独立云入口和真实联调；已授权准备和部署测试入口，
 Cloudflare 独立测试入口已部署；尚未合并 main、未打产品版本标签、未运行正式 release，仍需用户验收。
 
+## 本轮最终验收续验（2026-10-16）
+
+基线远端与本地均核实为 `f6c27621bccca94b17eb58f365f9403c75bdcb05`；初始 `work` 分支干净，
+抓取后以 FETCH_HEAD 创建 `codex/phase-a-review-fixes`，没有覆盖未提交内容。
+以下为最新状态；后文早期部署和测试数字保留为历史证据，不累加计数。
+
+- 云环境 spec revision 2，observations current；网络、秘密和账号变量状态仍是 `unknown`，不能称平台 ready/enforced。
+  变量存在性检查确认代理、管理测试密钥及构建凭据存在；缺少公开配置，从已连接 MoFish 项目取回公开 publishable key，
+  只写入忽略的 `.env`。管理密钥不写文件、不打印、不本地解码。
+- 实际管理 API 只读预检返回 GoTrue `404 user_not_found`；Cloudflare 只读部署查询 HTTP 200，
+  `mofish` 当前 100% 指向 `30e04134-5a77-4f46-8f8b-116f0198ad72`，线上源码仍为
+  `683aef1ff669f69d9b98f27c1b7654ece0605f4d`；首页 HTTP 200。没有重新部署。
+- 修复 `scripts/cloud-smoke.mjs` 对代理占位凭据的兼容性：取消本地 JWT 解码闸，先 GET 随机不存在的用户 ID，
+  只有 GoTrue 明确 `404 user_not_found` 才允许创建临时账号；401/403、通用 404、超时等停止写入。
+  仍不支持直接 `sb_secret_`，不回退使用已有账号，不输出凭据或原始错误正文。
+- `NODE_USE_ENV_PROXY=1 npm run test:cloud` **23/23 通过**：管理预检、临时账号登录/刷新和身份确认、
+  同账号第二独立会话恢复、保存和旧 revision 冲突、跨账号 RPC/REST 拒绝、匿名拒绝、成长记账及非法存档拒绝。
+  两个随机临时账号 DELETE 均 HTTP 200，后续 GET 均由 GoTrue 明确确认 404 `user_not_found`。
+  鱼缸按既有外键级联删除；未访问已有用户存档，未改数据库结构或发送邮件。
+- `node --test tests/cloud-smoke.test.mjs tests/cloud-auth.test.js tests/cloud-config.test.js` **37/37 通过，0 跳过**。
+  新增预检回归覆盖占位注入及认证失败/通用 404 不允许写入。此次仅修改 CLI 与文档，未改前端或数据库；
+  历史全套 136 项及浏览器 57 项证据不计为本轮重跑，新增提交的 CI 结果需另查。
+- 用户明确回复密码重置、真实设备离线重连、冲突与退出换号“还没测，等待你的指导和测试”。
+  四项均保持未测；操作和反馈模板见 [PHASE-A-ACCEPTANCE.md](PHASE-A-ACCEPTANCE.md)。
+  阶段 A 尚未完成，暂不进入阶段 B。
+- 本轮脱敏日志：`/workspace/reviews/mofish-phase-a-final-20261016-r2/`（`cloud-smoke.log`、`regression.log`）。
+  未启动后台服务或浏览器；本轮命令均已结束。保留公开 `.env`、正常依赖缓存及脱敏证据；
+  没有清理其他任务文件或进程。Tibo、旧 Sites、构建令牌均未修改；未合并 main、打标签或运行 release。
+- Supabase changelog 域名不在本环境出站白名单，请求 CONNECT 403，未绕过代理；
+  本轮不新增 Supabase 功能或 API，仅复用既有 Admin GET 进行凭据预检，并已真实验证。
+
 ## 范围和架构
 
 本阶段实现邮箱密码注册、验证、登录、重置密码，以及单用户跨设备云存档：
@@ -90,13 +121,13 @@ Luna 定向测试还覆盖认证/配置、同步/存储、云端脚本和并发�
 
 ## 仍需完成的真实联调
 
-- 两份真实 Supabase 数据库迁移及 13 项云端 SQL 验证已完成；未运行 `npm run test:cloud`，JWT 轮换、RPC HTTP 链路及真实 REST 错误码仍待验证。
+- 两份真实 Supabase 数据库迁移及 13 项云端 SQL 验证已完成；本轮完整 `test:cloud` 23/23 通过，详见顶部最新记录。
 - 用户已在真实测试入口完成注册确认邮件、验证后登录及电脑/手机同账号同步；截图显示已同步到 revision 2，随后用户确认跨设备登录和同步成功。这是用户侧验收证据，不是自动化管理冒烟。重置邮件、SMTP 配置、模板及跳转白名单仍未完整核验；验证链接曾打开困难但最终可用，原因尚未定位。
-- Cloudflare 测试入口与线上 CSP 等响应头已验证，详见下方部署记录；登录后完整 HTTP 链路仍待验证。
+- Cloudflare 测试入口与线上 CSP 等响应头已验证，详见部署记录；SDK 登录后的 HTTP 冒烟通过，设备 UI 剩余项待验。
 - 未测试 iOS Safari / Android Chrome 真机；移动尺寸测试属于浏览器视口仿真。
 - 已核验 `7c975ddb20ac8de75f8b8460699778a48b46fa25` 的 [GitHub Actions #3](https://github.com/Mintzz666/MoFish/actions/runs/38865316559) 成功：严格 PostgreSQL 测试、构建、Wrangler 预演、本地假后端浏览器测试及运行库清理步骤均通过。这不替代真实 Auth/邮件验收。
 - 用户已有 Cloudflare 账号（Tibo 正在使用）；Supabase 项目已创建并连接，无需再授权同一次迁移。
-- 当前环境的 Cloudflare token/account 与三个目标域名已通过实际请求验证；公开 Supabase 构建配置已恢复到忽略的 `.env`。首轮部署的平台 readiness 为 `unknown`；本轮重新核验 spec revision 9，观测为 current，凭据和账号变量均 ready，网络 enforced。完整冒烟所需 `MOFISH_SMOKE_SERVICE_ROLE_KEY` 未配置，私密配置仍由用户在安全设置中完成，不通过聊天传递。
+- 当前环境的 Cloudflare token/account 与三个目标域名已通过实际请求验证；公开 Supabase 构建配置已恢复到忽略的 `.env`。首轮部署的平台 readiness 为 `unknown`；本轮重新核验 spec revision 9，观测为 current，凭据和账号变量均 ready，网络 enforced。前轮完整冒烟所需管理密钥未配置；本轮已配置且实际请求通过，见顶部记录。私密配置不通过聊天传递。
 
 ## Cloudflare 测试部署记录（2026-10-16）
 
@@ -118,7 +149,7 @@ Luna 定向测试还覆盖认证/配置、同步/存储、云端脚本和并发�
 | --- | --- |
 | 代码、旧存档兼容、账号/同步竞态 | 单元/集成及本地浏览器检查已通过 |
 | 数据库 RLS、权限、原子 revision、真实并发成长 | 本地内核、多连接及真实 Supabase SQL 13 项通过；临时去掉行锁会复现重复奖励 |
-| Supabase Auth / PostgREST 真实项目 | 已应用迁移；公开认证设置及匿名拒绝 HTTP 已验证，登录/刷新及受认证 RPC 仍待验证 |
+| Supabase Auth / PostgREST 真实项目 | 已应用迁移；本轮完整管理/登录/刷新/恢复/受认证 RPC/越权拒绝/成长/清理 23/23 通过 |
 | 验证及重置邮件实际投递 | 用户确认注册验证链路成功；密码重置邮件及 SMTP 配置仍待验证 |
 | Cloudflare 独立 HTTPS 入口 | 已部署指定提交；线上资源一致性、响应头及 Chromium 首页检查通过 |
 | 用户电脑/手机的真实网络体验 | 用户确认同账号登录和同步成功；线上冲突、离线重连、换号及重置流程仍待验证 |
@@ -128,7 +159,7 @@ Luna 定向测试还覆盖认证/配置、同步/存储、云端脚本和并发�
 ## 阶段 A 收口清单
 
 最终验收对象、证据矩阵和剩余执行步骤见 [PHASE-A-ACCEPTANCE.md](PHASE-A-ACCEPTANCE.md)。
-本轮补验 6 项真实公开/匿名 HTTP 均通过；完整 `test:cloud` 已实际尝试，因管理测试变量缺失在网络请求前停止，尚不能将阶段 A 标记为完成。
+前轮补验 6 项真实公开/匿名 HTTP 均通过，完整 `test:cloud` 当时因管理变量缺失停止。本轮已解除该阻塞、23/23 通过；用户设备剩余验收未完成，阶段 A 仍未完成。
 
 四阶段范围保持 `docs/ROADMAP.md` 的约定：A 身份与单用户云存档 → B 多人共享与成员权限 → C 页面与基础 3D → D 鱼体运动、水面、水草与造景。本轮只收口 A。
 
@@ -138,7 +169,7 @@ Luna 定向测试还覆盖认证/配置、同步/存储、云端脚本和并发�
 
 | 项目 | 执行方式 / 通过标准 | 当前状态 |
 | --- | --- | --- |
-| 真实 HTTP 自动冒烟 | 用户在安全环境配置专用 `MOFISH_SMOKE_SERVICE_ROLE_KEY` 后运行 `npm run test:cloud`；随机测试账号登录/刷新、第二会话恢复、保存/冲突、越权拒绝、成长与清理全部成功；仅测试本轮账号 | 待配置、待执行 |
+| 真实 HTTP 自动冒烟 | 用户在安全环境配置专用 `MOFISH_SMOKE_SERVICE_ROLE_KEY` 后运行 `npm run test:cloud`；随机测试账号登录/刷新、第二会话恢复、保存/冲突、越权拒绝、成长与清理全部成功；仅测试本轮账号 | 本轮 23/23 通过，含两个临时账号删除确认 |
 | 邮件与回调 | 用户在 Supabase 核验 SMTP、Site URL 和 Redirect URLs 含测试入口；用专用测试邮箱从网页注册、收确认邮件并回到测试入口登录；忘记密码邮件回到同一入口，改密后重新登录成功 | 注册验证及登录已由用户确认；重置流程及配置核验待完成 |
 | 双设备恢复 | 电脑 A 给鱼命名、喂食、改造景并等到已同步；手机 B 登录同账号，核对名字、鱼种、成长、造景，刷新后仍一致 | 用户确认电脑/手机同账号登录和同步成功；未声称已逐字段验收所有存档属性 |
 | 冲突与离线 | A/B 从同 revision 同时编辑，只接受一个，另一端保留本地副本并显示冲突；离线编辑、重连、重复保存不丢档或重复成长 | 待线上实测；本地回归已通过 |

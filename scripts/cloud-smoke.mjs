@@ -96,8 +96,8 @@ function readConfig(env) {
   if (!serviceKey) {
     throw new SmokeError('真实联调只支持自动创建的临时账号；需要 MOFISH_SMOKE_SERVICE_ROLE_KEY，不接受既有账号凭据');
   }
-  if (!isLegacyServiceRoleJwt(serviceKey)) {
-    throw new SmokeError('MOFISH_SMOKE_SERVICE_ROLE_KEY 必须是 role=service_role 的 JWT；opaque sb_secret_* 暂不支持');
+  if (serviceKey.startsWith('sb_secret_')) {
+    throw new SmokeError('opaque sb_secret_* 暂不支持；请通过安全环境配置 Legacy service_role 密钥');
   }
 
   let parsed;
@@ -106,18 +106,6 @@ function readConfig(env) {
     throw new SmokeError('项目地址必须是纯 HTTPS 根地址（不含路径、查询参数或内嵌凭据）');
   }
   return { url: parsed.origin, anonKey, serviceKey, target: parsed.host };
-}
-
-function isLegacyServiceRoleJwt(key) {
-  const parts = String(key).split('.');
-  if (parts.length !== 3 || !parts.every(Boolean)) return false;
-  try {
-    const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-    return claims?.role === 'service_role' && Number.isFinite(Number(claims.exp)) &&
-      Number(claims.exp) > Math.floor(Date.now() / 1000);
-  } catch {
-    return false;
-  }
 }
 
 function parseJson(text) {
@@ -300,6 +288,17 @@ export async function runCloudSmoke({
     config = readConfig(env);
     if (typeof fetchImpl !== 'function') throw new SmokeError('当前 Node 环境没有可用的 fetch');
     logger.log(`目标 Supabase 项目：${config.target}（只创建临时账号；密钥不会打印）\n`);
+
+    // Managed environments may expose only a proxy placeholder locally. Let the
+    // destination validate the injected credential before making any write. A
+    // specific GoTrue missing-user response proves access to the admin route;
+    // a generic gateway 404 or a rejected token must never permit account creation.
+    const adminProbe = await call(`/auth/v1/admin/users/${randomUUID()}`, {
+      token: config.serviceKey,
+      apiKey: config.serviceKey
+    });
+    requireCheck(isConfirmedMissingUser(adminProbe), '管理凭据只读预检通过',
+      `HTTP ${adminProbe.status}; ${isConfirmedMissingUser(adminProbe) ? 'GoTrue user_not_found' : '未确认管理 API 权限，停止写入'}`);
 
     const accountA = await createAccount('a');
     const accountB = await createAccount('b');
