@@ -2,6 +2,8 @@
 
 一个用来短暂休息的电子鱼缸。原创 Canvas 2D 鱼、水草和光影，无外部图片、字体或运行依赖。
 
+游客模式完全在本机运行，不需要账号；也可以注册邮箱账号，把鱼缸同步到云端，在多台设备上接着养。
+
 ## 运行
 
 需要 Node.js 20+（测试与打包）、Python 3（本地静态服务）。
@@ -9,11 +11,31 @@
 ```sh
 npm start
 # 浏览器访问 http://localhost:5173
-npm test
-npm run build
+npm test          # 逻辑与同步单元测试（含真实 Postgres 引擎上的 RLS/迁移集成测试）
+npm run build     # 生成 dist/
+npm run preview   # 服务 dist/ 并应用 _headers（含 CSP），用于部署前自检
+npm run test:e2e  # 浏览器端到端（需要本机 Chrome；用本地假后端模拟云服务）
 ```
 
-`dist/` 可部署至 GitHub Pages 或任意 HTTPS 静态托管。无需常驻应用服务器。首次加载完成后通过 Service Worker 缓存资源，可离线使用；浏览器安装方式因平台而异。
+`dist/` 可部署至 Cloudflare Workers 静态资源、GitHub Pages 或任意 HTTPS 静态托管。无需常驻应用服务器。
+首次加载完成后通过 Service Worker 缓存静态资源，可离线使用；浏览器安装方式因平台而异。
+
+## 云存档（阶段 A）
+
+邮箱密码注册登录 + 单用户跨设备云存档，技术方案：Cloudflare Workers 静态资源（独立入口，不要求
+ChatGPT 登录）+ Supabase Auth + Supabase Postgres（RLS + revision 条件更新）。
+
+- 未配置云服务时自动降级为游客模式，界面明确标注「未连接云端」，不会发起任何网络请求。
+- 已登录时状态会显示为 游客 / 离线 / 同步中 / 已同步 / 同步失败 / 有冲突。
+- 只同步持久属性（鱼的身份、名字、种类、成长、喂食记录、造景）；每帧位置与水面光影在本机计算。
+- 云端写入按 2.5 秒去抖，且只在内容真的变化时才发请求；已登录时的离线成长由服务端按时间结算
+  （上限 24 小时，重复请求不重复奖励）。
+- 冲突（两台设备同时改同一版本）由数据库 revision 判定：后写入的一方保留本机副本并交给用户选择，
+  不会静默覆盖；被放弃的那一份会归档为本机备份，可导出。
+- 本地缓存按「账号 + 鱼缸」隔离，退出或换号不会串档；登录前的游客存档仍保留在原处。
+
+配置步骤、部署、备份/恢复/回滚与安全说明见 [`docs/CLOUD-SETUP.md`](docs/CLOUD-SETUP.md)。
+产品路线与各阶段的验收标准见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
 ## 首版功能
 
@@ -27,16 +49,25 @@ npm run build
 ## 实施计划
 
 1. **首版**：完成本地可玩、离线缓存、存档备份与移动布局。
-2. **跨设备同步**：增加托管认证与数据库。`web/model.js` 的 storage adapter 是同步接入边界；当前没有云同步。
-3. **养成内容**：增加鱼种、装饰与缓慢解锁；避免签到和离线惩罚。
+2. **阶段 A（v0.2.0）**：邮箱登录、单用户跨设备云存档、Cloudflare 独立入口 —— 代码已实现，等待真实云账号联调与验收。
+3. **阶段 B（v0.3.0）**：多用户共同养鱼、成员邀请/撤销、角色权限、变更通知。
+4. **阶段 C / D（v0.4.0 / v0.5.0）**：页面重设计与基础 3D 鱼缸；鱼体摆动、真实转向/避障、水面光影与造景。
+
+阶段划分与验收标准以 [`docs/ROADMAP.md`](docs/ROADMAP.md) 为准。
 
 ## 同步设计
 
-所有设备都可访问同一静态网页；共享同一份进度需要同步服务。建议用托管认证 + 数据库，无需自己维护服务器。
+云端权威数据是 Supabase Postgres 里的一行：`aquariums(id, owner_id, revision, state_version, state_json, created_at, updated_at, last_growth_at)`。
+写入必须带 `expected_revision` 走 `save_aquarium` 这个条件更新 RPC：revision 不匹配就返回 conflict 与
+服务端当前版本，客户端保留未同步副本并交给用户选择，不使用客户端时间戳做「最后写入覆盖」。
+离线成长由 `settle_growth` 按服务端时间整秒结算（上限 24 小时），锚点推进到 `now()`，因此重复调用不会重复奖励。
 
-未来表结构：`aquariums(owner_id, revision, state_json, updated_at)`；按登录用户限制读写。客户端先读取本地快照，再拉取云端修订；用 revision 做条件更新。离线期间记录带唯一 ID 的喂食/命名事件，联网后去重合并；跨设备冲突需明确提示，不能无声覆盖。当前导出/导入提供手动跨设备迁移。
+前端侧：`web/model.js` 是纯领域逻辑，`web/storage.js` 负责按账号/鱼缸隔离的本地缓存，
+`web/cloud/*` 负责认证、数据接口与同步状态机，`web/ui/account.js` 只做表单与状态呈现。
+Service Worker 只缓存同源静态资源，认证与存档接口不进入缓存。
 
-Service Worker 只缓存本站静态资源。将来加入账号 API 时，不缓存私有 API 数据；私密托管下离线缓存的本机内容仍可能被同设备浏览器用户访问。
+阶段 B 会新增 `aquarium_members` 成员关系表并放宽「每账号一条鱼缸」的唯一索引；
+届时应新增迁移文件而不是修改已应用的迁移。
 
 ## 用户确认版本后的发布 hook
 

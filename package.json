@@ -6,7 +6,13 @@
   "scripts": {
     "test": "node --test",
     "start": "python3 -m http.server 5173 --directory web",
+    "preview": "node scripts/serve.mjs --dir dist --port 5173",
     "build": "node build.mjs",
+    "test:cloud": "node scripts/cloud-smoke.mjs",
+    "test:e2e": "node tests/e2e/cloud-e2e.mjs",
     "release": "node scripts/release.mjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.10"
   }
 }

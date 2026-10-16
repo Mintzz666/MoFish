@@ -1,5 +1,7 @@
 export const KEY = 'mofish.v1';
 export const MAX_FISH = 12;
+// 存档结构版本。写入云端时会作为 state_version 一并提交；服务端只接受它支持的版本。
+export const STATE_VERSION = 1;
 export const SPECIES = [
   {name:'落日金', color:'#eeac64', accent:'#e47851'},
   {name:'薄荷青', color:'#91cebc', accent:'#438c90'},
@@ -30,6 +32,18 @@ export function catchUp(state, now=Date.now()) {
   return hours;
 }
 export function eat(fish) {fish.meals++;fish.growth=clamp(fish.growth+.015,0,1);}
+export function cloneState(state) {return JSON.parse(JSON.stringify(state));}
+// 用于「是否有实质变更」的比较：排序稳定的字段序列，刻意排除 savedAt / 每帧位置等
+// 随时间或渲染自行变化的字段，避免无变更也触发云端写入。
+export function canonicalState(state) {
+  return JSON.stringify([
+    state.version,
+    state.fish.map(f=>[f.id,f.name,f.species,f.born,Math.round(f.growth*1e6)/1e6,f.meals]),
+    state.plants,
+    state.night===true,
+    state.sound===true
+  ]);
+}
 // Storage adapter: replace this boundary with account-based cloud sync in phase two.
 export function createStorage(storage) {
   return {load(){const raw=storage.getItem(KEY);return raw?validate(JSON.parse(raw)):null;},save(state){storage.setItem(KEY,JSON.stringify(state));}};
