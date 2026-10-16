@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#123d40"><meta name="description" content="MoFish MoFish：一方属于你的安静水世界。喂鱼、听水声，让心情慢下来。"><title>MoFish</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml"><link rel="manifest" href="manifest.webmanifest"><link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header><a class="brand" href="./"><span class="brand-icon">≈</span><span>MoFish<small>A LITTLE PAUSE</small></span></a><div class="header-right"><span class="save-status" id="save-status">本机存档</span><button class="text-button" id="storage-button">存档与说明 ↗</button></div></header>
+<main>
+<section class="intro"><div><p class="eyebrow">A LITTLE WORLD, A LITTLE PAUSE</p><h1>把时间，交给小鱼。</h1><p class="subtitle">不赶时间，不必打卡。来这里，发一会儿呆。</p></div><div class="date-note"><span class="live-dot"></span>你的小小水世界<br><small>随时回来，都有鱼在等你</small></div></section>
+<section class="aquarium" id="aquarium" aria-label="互动鱼缸">
+<canvas id="tank" tabindex="0" aria-label="鱼缸：点击或轻触空白处喂食，点击鱼儿查看信息；按空格在中央投食"></canvas>
+<div class="tank-top"><span class="tank-label">01 / 我的慢生活</span><span id="scene-label">日光 · 静谧水域</span></div>
+<div class="tank-message"><span class="tiny-wave">≈</span><span id="tank-tip">轻触水面，投下一点小欢喜</span></div>
+<div class="tank-footer"><span><i class="live-dot"></i>自在游动中</span><button id="fullscreen" aria-label="全屏查看鱼缸">⤢</button></div>
+</section>
+<section class="controls" aria-label="鱼缸工具"><div class="tools"><button id="feed" class="tool primary"><span>⠿</span><b>喂一点</b><small>看它们游过来</small></button><button id="add-fish" class="tool"><span>⋊</span><b>添条小鱼</b><small id="fish-counter">3 / 12 位小伙伴</small></button><button id="add-plant" class="tool"><span>♧</span><b>种株水草</b><small id="plant-counter">让水底更绿一点</small></button></div><div class="toggles"><button id="night" aria-pressed="false">☾ <span>夜间</span></button><button id="sound" aria-pressed="false">♫ <span>水声</span></button></div></section>
+<section class="below"><div class="companions"><p class="eyebrow">LITTLE COMPANIONS</p><h2>今天，也一起慢慢长大。</h2><div id="fish-list" class="fish-list"></div></div><aside><span class="aside-symbol">〰</span><p>有时候，什么也不做，<br>也是一件很好的事。</p><small>离开时鱼儿会休息，回来时继续长大。<br>不用担心，它们不会因为忘记喂食而离开。</small></aside></section>
+</main>
+<footer><span>MoFish · 给日常留一点空白</span><span>本地保存 · 无需登录</span></footer>
+<div id="toast" role="status" aria-live="polite"></div>
+<dialog id="fish-dialog"><form method="dialog"><button class="close" aria-label="关闭">×</button></form><p class="eyebrow">MEET YOUR LITTLE FRIEND</p><h2 id="fish-title"></h2><p id="fish-info"></p><label for="fish-name">给它一个名字</label><input id="fish-name" maxlength="16" autocomplete="off"><button class="solid" id="rename">保存名字</button></dialog>
+<dialog id="storage-dialog"><form method="dialog"><button class="close" aria-label="关闭">×</button></form><p class="eyebrow">YOUR LITTLE WORLD</p><h2>把小鱼，好好留住。</h2><p>当前鱼缸保存在这个浏览器里，每 15 秒自动保存。清理浏览器数据前，请先导出存档。</p><div class="storage-actions"><button class="solid" id="export">导出存档</button><button class="outline" id="import">导入存档</button><input type="file" id="import-file" accept="application/json,.json" hidden></div><p class="note">在其他电脑或手机上打开网页可以独立养鱼。想接着养同一缸鱼，可以导出后在另一台设备导入；自动云同步将在后续版本加入。</p><details><summary>离线与安装</summary><p>支持的浏览器在首次加载完成后可离线使用，也可通过浏览器菜单“添加到主屏幕”。离线成长最多计算 24 小时，不会饿死。环境声音需要主动开启。</p></details><p id="offline-status" class="note">正在准备离线资源…</p><p class="note">导入会替换当前鱼缸，请先导出备份。没有服务器保存你的养鱼记录。</p></dialog>
+<script type="module" src="app.js"></script>
+</body></html>
