@@ -37,3 +37,20 @@ npm run build
 未来表结构：`aquariums(owner_id, revision, state_json, updated_at)`；按登录用户限制读写。客户端先读取本地快照，再拉取云端修订；用 revision 做条件更新。离线期间记录带唯一 ID 的喂食/命名事件，联网后去重合并；跨设备冲突需明确提示，不能无声覆盖。当前导出/导入提供手动跨设备迁移。
 
 Service Worker 只缓存本站静态资源。将来加入账号 API 时，不缓存私有 API 数据；私密托管下离线缓存的本机内容仍可能被同设备浏览器用户访问。
+
+## 用户确认版本后的发布 hook
+
+这是一条由协作助手在你确认版本后调用的发布命令，不会监听聊天，也不会在每次保存或提交时自动发版。约定保存在 `AGENTS.md`，后续在此仓库工作的助手应遵守。
+
+你说“这个版本可以了”后，助手审查并提交代码，再执行：
+
+```sh
+npm run release -- --dry-run
+npm run release -- --message "当前版本的简短说明"
+# 指定版本时：
+npm run release -- --version 0.2.0 --message "新增功能说明"
+```
+
+首次使用 package.json 中的版本（当前为 0.1.0），后续默认递增 patch。Hook 要求工作区干净、测试和构建通过、远端 main 没有未整合变更；然后原子推送 main 与带说明的版本标签。失败时保留本地提交及标签供重试，不强制推送。不创建 GitHub Release 页面；版本入口是 GitHub Tags。Sites 上线需单独执行。
+
+运行要求：已安装 Git/Node/Python（预览用），配置 origin 及有效的 GitHub 写入凭据；正式发布需要 Git 提交身份。脚本不保存任何凭据。
