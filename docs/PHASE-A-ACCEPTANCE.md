@@ -23,7 +23,7 @@
 | 浏览器操作、回调、换号、离线重连、冲突备份 | 57 项真实 dist + 本地假后端浏览器检查通过，含 390/320px | 自动化通过；不替代真实云端用户流程 |
 | 公开认证接口与匿名权限 | 前轮 `/auth/v1/settings` 200 且邮箱确认开启；`/auth/v1/user` 未登录返回 401；鱼缸表读取及三个 RPC 均返回 401 / PostgreSQL `42501` | 6 项通过；没有读取已有用户存档或发送邮件 |
 | 真实登录后的刷新、跨账号 HTTP 拒绝与完整冒烟 | 本轮 `NODE_USE_ENV_PROXY=1 npm run test:cloud`：23/23 通过，含只读管理预检及两个随机临时账号删除后 GoTrue 404 确认 | 通过；第二设备为独立 SDK 会话，不是真机 UI |
-| 真实密码重置 | 用户 Safari 打开邮件后跳到 `localhost:3000` 失败；随机临时账号生成 recovery 链接时，即使指定线上 redirect_to 也回退 localhost | 已复现失败；待修复 Auth URL 配置后重新发信复测 |
+| 真实密码重置 | 用户 Safari 打开邮件后跳到 `localhost:3000` 失败；随机临时账号生成 recovery 链接时，即使指定线上 redirect_to 也回退 localhost | 原失败已定位；用户保存 URL 配置后，两项无发信回调检查通过，真实邮件改密待复测 |
 | 新版真实离线恢复、冲突、退出换号 | 用户本轮明确尚未测试；本地回归及云端 RPC 冲突不能替代设备 UI 验收 | 未测；待用户实测 |
 
 前轮因缺少变量停止的记录仍是未通过；本轮已配置并完成新的完整云端冒烟，解除该自动化阻塞。
@@ -56,6 +56,15 @@ Codex 仅创建一个随机临时账号，通过 Admin generate_link（不发邮
 保存后先由 Codex 重跑无发信的临时账号回调检查，再由用户从线上站点重新申请重置邮件，使用最新链接完成改密和重新登录。
 不要复用已消费的旧链接，也不手工转移截图中的令牌；截图包含会话信息，不再传播。
 此配置修复不需要重新部署 Worker，不能改变 Tibo 或旧 Sites 配置。
+
+### 用户保存配置后的复核
+
+2026-10-16 用户确认已保存 URL 配置。Codex 另建一个随机临时账号，重复无发信 recovery 链接检查：
+显式线上回调及默认回调均 HTTP 200，`redirect_to` 均为 `https://mofish.tibo-reset-notifier.workers.dev/`，2/2 通过。
+临时账号 DELETE HTTP 200，随后 GoTrue 404 `user_not_found` 确认删除；无邮件发送或已有用户存档访问。
+脱敏证据：`/workspace/reviews/mofish-phase-a-final-20261016-r2/recovery-redirect-after-config.log`。
+当前环境观测已更新为 spec revision 6、current，网络 enforced、两项秘密及账号变量 ready。
+回调配置阻塞已解除；尚待用户重新申请新邮件，实测 Safari 回到站点、设置新密码、退出和新密码登录。
 
 ## 用户设备补验操作
 

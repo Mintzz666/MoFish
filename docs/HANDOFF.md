@@ -48,6 +48,13 @@ Cloudflare 独立测试入口已部署；尚未合并 main、未打产品版本�
 当前连接缺少 Auth URL 配置修改接口，待用户在 Supabase URL Configuration 设置 Site URL 及 Redirect URLs 后，
 Codex 重跑无发信诊断，用户再从线上申请新邮件完成真实改密。具体步骤见验收文档的“密码重置回调阻塞”。
 
+## 用户保存回调配置后的复核
+
+用户确认已保存配置后，显式线上 redirect_to 与默认回调两项 Admin recovery 链接检查均返回线上 MoFish 根地址，2/2 通过。
+仅使用新建随机临时账号、不发邮件；删除 HTTP 200、GoTrue 404 确认清理。
+日志 `recovery-redirect-after-config.log` 保存在本轮证据目录。环境 spec revision 6 已观测为 current、网络 enforced、秘密和账号变量 ready。
+URL 配置阻塞解除，真实 Safari 邮件打开、改密、退出并新密码登录仍待用户复测；尚不宣称密码重置验收通过。
+
 ## 范围和架构
 
 本阶段实现邮箱密码注册、验证、登录、重置密码，以及单用户跨设备云存档：
