@@ -96,6 +96,9 @@ export function createSyncEngine({
   let inFlight = null;
   let queued = false;
   let settling = false;
+  let settlePromise = null;
+  const hydrationCounts = new Map();
+  const hydrationPromises = new Map();
   let settleToken = 0;
   let disposed = false;
 
@@ -116,6 +119,7 @@ export function createSyncEngine({
       revision: baseRevision,
       baseRevision,
       dirty: isDirty(),
+      busy: Boolean(inFlight || settling || (hydrationCounts.get(generation) || 0) > 0 || (status === STATUS.SYNCING && timer === null)),
       lastGrowthAt,
       conflict: conflict ? { reason: conflict.reason, cloudRevision: conflict.cloudRevision } : null
     };
@@ -186,7 +190,8 @@ export function createSyncEngine({
     const state = getState();
     store.writeAccountState(uid, aquariumId, state);
     store.writeCurrent(uid, { aquariumId, revision: baseRevision, lastGrowthAt });
-    if (isDirty()) store.writePending(uid, aquariumId, state, baseRevision);
+    if (conflict) store.writePending(uid, aquariumId, state, conflict.baseRevision ?? baseRevision);
+    else if (isDirty()) store.writePending(uid, aquariumId, state, baseRevision);
     else store.clearPending(uid, aquariumId);
     return true;
   }
@@ -195,9 +200,11 @@ export function createSyncEngine({
     if (disposed) return { ok: false, skipped: 'disposed' };
     generation += 1;                        // 旧会话的在途响应全部作废
     const gen = generation;
+    hydrationCounts.clear();
+    hydrationPromises.clear();
     clearSaveTimer();
     inFlight = null; queued = false; conflict = null;
-    settleToken += 1; settling = false;
+    settleToken += 1; settling = false; settlePromise = null;
     session = nextSession && nextSession.user && nextSession.user.id ? nextSession : null;
 
     if (!session) {
@@ -220,7 +227,25 @@ export function createSyncEngine({
    *   2) 判断本机各份副本与云端的关系：能安全上传就上传，云端被人改过就交给用户选择
    *   3) 只有在本机与云端一致之后，才结算服务端成长并采用云端状态
    */
-  async function hydrate({ gen = generation } = {}) {
+  function hydrate(options = {}) {
+    const gen = options.gen ?? generation;
+    const existing = hydrationPromises.get(gen);
+    if (existing && !options.force) return existing;
+    hydrationCounts.set(gen, (hydrationCounts.get(gen) || 0) + 1);
+    const operation = Promise.resolve()
+      .then(() => hydrateInternal(options))
+      .finally(() => {
+        const remaining = (hydrationCounts.get(gen) || 0) - 1;
+        if (remaining > 0) hydrationCounts.set(gen, remaining);
+        else hydrationCounts.delete(gen);
+        if (hydrationPromises.get(gen) === operation) hydrationPromises.delete(gen);
+        if (!disposed && gen === generation) setStatus(status);
+      });
+    if (!existing) hydrationPromises.set(gen, operation);
+    return operation;
+  }
+
+  async function hydrateInternal({ gen = generation } = {}) {
     const uid = userId();
     if (!uid) return { ok: false, skipped: 'no_session' };
     setStatus(STATUS.SYNCING);
@@ -326,10 +351,10 @@ export function createSyncEngine({
    * 前提：本机没有未同步改动（否则先写入，见 syncNow 的顺序说明）。
    * 测试用大额推进服务端时间即可验证「重复调用不重复奖励」。
    */
-  async function settleAndAdopt({ gen = generation, reason = 'sync' } = {}) {
+  function settleAndAdopt({ gen = generation, reason = 'sync' } = {}) {
     if (!aquariumId) return { ok: false, skipped: 'no_aquarium' };
+    if (settling) return settlePromise || { ok: true, skipped: 'settling', reason };
     if (isDirty()) return { ok: true, skipped: 'dirty', reason };
-    if (settling) return { ok: true, skipped: 'settling', reason };
     if (!isOnline()) { setStatus(STATUS.OFFLINE); return { ok: false, skipped: 'offline' }; }
 
     const aquariumAtRequest = aquariumId;
@@ -338,71 +363,81 @@ export function createSyncEngine({
     const canonicalAtRequest = canonicalState(stateAtRequest);
     const token = ++settleToken;
     settling = true;
-    try {
-      const settled = await api.settleGrowth(aquariumAtRequest);
-      if (stale(gen)) return { ok: false, skipped: 'stale' };
-      if (!settled.ok) {
-        const result = settled.result || {};
-        if (result.kind === 'unauthenticated' || result.kind === 'forbidden') {
-          setStatus(STATUS.SIGNED_OUT, result.message || '');
+    const operation = Promise.resolve().then(async () => {
+      try {
+        const settled = await api.settleGrowth(aquariumAtRequest);
+        if (stale(gen)) return { ok: false, skipped: 'stale' };
+        if (!settled.ok) {
+          const result = settled.result || {};
+          if (result.kind === 'unauthenticated' || result.kind === 'forbidden') {
+            setStatus(STATUS.SIGNED_OUT, result.message || '');
+            return { ok: false, result };
+          }
+          if (result.kind === 'not_found') {
+            // 云端那条鱼缸不在了（例如被删除）：先释放结算锁再重新对账。
+            if (settleToken === token) {
+              settling = false;
+              settlePromise = null;
+            }
+            return hydrate({ gen, force: true });
+          }
+          if (result.retryable) {
+            setStatus(isOnline() ? STATUS.ERROR : STATUS.OFFLINE, result.message || '');
+            return { ok: false, result, offline: true };
+          }
+          setStatus(STATUS.ERROR, result.message || '');
           return { ok: false, result };
         }
-        if (result.kind === 'not_found') {
-          // 云端那条鱼缸不在了（例如被删除）：先释放结算锁再重新对账。
-          if (settleToken === token) settling = false;
-          return hydrate({ gen });
+
+        if (aquariumId !== aquariumAtRequest || baseRevision !== revisionAtRequest) {
+          return { ok: false, skipped: 'baseline_changed' };
         }
-        if (result.retryable) {
-          setStatus(isOnline() ? STATUS.ERROR : STATUS.OFFLINE, result.message || '');
-          return { ok: false, result, offline: true };
+
+        const current = getState();
+        if (canonicalState(current) !== canonicalAtRequest || isDirty()) {
+          // The server may have credited growth and advanced its revision.
+          // Keep the newer local state and make the difference explicit instead
+          // of adopting the stale response or using its revision as our baseline.
+          return raiseConflict({
+            reason: CONFLICT_REASON.PENDING,
+            cloudState: validate(settled.result.state),
+            cloudRevision: settled.result.revision,
+            localState: validate(current),
+            message: '成长结算期间本机也有修改，云端版本已更新。本机修改已保留，请选择如何处理。'
+          });
         }
-        setStatus(STATUS.ERROR, result.message || '');
-        return { ok: false, result };
-      }
 
-      if (aquariumId !== aquariumAtRequest || baseRevision !== revisionAtRequest) {
-        return { ok: false, skipped: 'baseline_changed' };
-      }
-
-      const current = getState();
-      if (canonicalState(current) !== canonicalAtRequest || isDirty()) {
-        // The server may have credited growth and advanced its revision.
-        // Keep the newer local state and make the difference explicit instead
-        // of adopting the stale response or using its revision as our baseline.
-        return raiseConflict({
-          reason: CONFLICT_REASON.PENDING,
-          cloudState: validate(settled.result.state),
-          cloudRevision: settled.result.revision,
-          localState: validate(current),
-          message: '成长结算期间本机也有修改，云端版本已更新。本机修改已保留，请选择如何处理。'
-        });
-      }
-
-      adopt(validate(settled.result.state), settled.result.revision);
-      lastGrowthAt = settled.result.lastGrowthAt || lastGrowthAt;
-      const uid = userId();
-      if (uid && aquariumId) store.writeCurrent(uid, { aquariumId, revision: baseRevision, lastGrowthAt });
-      setStatus(STATUS.SYNCED);
-      return { ok: true, creditedSeconds: settled.result.creditedSeconds || 0, revision: baseRevision, reason };
-    } finally {
-      if (settleToken === token) {
-        settling = false;
-        if (queued && gen === generation) {
-          queued = false;
-          if (!disposed && !conflict && isDirty()) {
-            persistLocal();
-            scheduleSave();
+        adopt(validate(settled.result.state), settled.result.revision);
+        lastGrowthAt = settled.result.lastGrowthAt || lastGrowthAt;
+        const uid = userId();
+        if (uid && aquariumId) store.writeCurrent(uid, { aquariumId, revision: baseRevision, lastGrowthAt });
+        setStatus(STATUS.SYNCED);
+        return { ok: true, creditedSeconds: settled.result.creditedSeconds || 0, revision: baseRevision, reason };
+      } finally {
+        if (settleToken === token) {
+          settling = false;
+          settlePromise = null;
+          if (queued && gen === generation) {
+            queued = false;
+            if (!disposed && !conflict && isDirty()) {
+              persistLocal();
+              scheduleSave();
+            }
           }
+          if (!disposed) setStatus(status);
         }
       }
-    }
+    });
+    settlePromise = operation;
+    setStatus(STATUS.SYNCING);
+    return operation;
   }
 
   function raiseConflict({ reason, cloudState, cloudRevision, localState, message }) {
     clearSaveTimer();
     // 关键：未同步副本连同「它基于哪个 revision」一起存下来，恢复对账时才能判断云端是否被改过。
     const base = conflict?.baseRevision ?? baseRevision;
-    conflict = { reason, cloudState, cloudRevision, localState, baseRevision: base };
+    conflict = { reason, cloudState, cloudRevision, localState: validate(localState), baseRevision: base, message };
     const uid = userId();
     if (uid && aquariumId) store.writePending(uid, aquariumId, localState, base);
     // 冲突期间水面上显示「本机那一份」：用户最后看到的就是它，
@@ -431,13 +466,28 @@ export function createSyncEngine({
    * 变更通知：只做「是否真的变了」与去抖，不建立固定轮询。
    */
   function markDirty() {
-    if (disposed || mode !== 'cloud' || conflict || !aquariumId) return false;
+    if (disposed || mode !== 'cloud' || !aquariumId) return false;
     const canonical = canonicalState(getState());
+    if (conflict) {
+      conflict.localState = validate(getState());
+      persistLocal();
+      setStatus(STATUS.CONFLICT);
+      return true;
+    }
     if (baseCanonical !== null && canonical === baseCanonical) {
+      const wasWaiting = timer !== null;
       clearSaveTimer();          // 撤销尚未发出的无意义写入
+      if (wasWaiting && !inFlight && !settling) setStatus(STATUS.SYNCED);
       return false;
     }
+    if (!isOnline()) {
+      clearSaveTimer();
+      persistLocal();
+      setStatus(STATUS.OFFLINE);
+      return true;
+    }
     scheduleSave();
+    setStatus(STATUS.SYNCING);
     return true;
   }
 
@@ -532,6 +582,7 @@ export function createSyncEngine({
       if (inFlight === request) {
         inFlight = null;
         if (queued && !disposed && !conflict && gen === generation) { queued = false; scheduleSave(); }
+        if (!disposed) setStatus(status);
       }
     }
   }
@@ -545,23 +596,29 @@ export function createSyncEngine({
   async function resolveConflict(choice, { gen = generation } = {}) {
     if (!conflict) return { ok: true, skipped: 'no_conflict' };
     const uid = userId();
-    const pendingLocal = conflict.localState;
 
-    if (choice === 'later') return { ok: true, skipped: 'later' };
+    if (choice === 'later') {
+      conflict.localState = validate(getState());
+      persistLocal();
+      return { ok: true, skipped: 'later' };
+    }
 
     if (choice === 'cloud') {
-      // 先把本机未同步的改动归档成备份，再采用云端存档：用户的选择不该等于数据消失。
-      if (uid && aquariumId) store.writeBackup(uid, aquariumId, pendingLocal);
-      const ensured = await api.ensureAquarium(pendingLocal, STATE_VERSION);
+      const candidate = validate(getState());
+      const ensured = await api.ensureAquarium(candidate, STATE_VERSION);
       if (stale(gen)) return { ok: false, skipped: 'stale' };
       if (!ensured.ok) {
         setStatus(ensured.result?.retryable === false ? STATUS.ERROR : (isOnline() ? STATUS.ERROR : STATUS.OFFLINE), ensured.result?.message || '');
         return { ok: false, result: ensured.result };
       }
+      // The user can continue editing while ensureAquarium is in flight. Back
+      // up the live state at resolution time so choosing cloud never erases
+      // edits made after the conflict was first shown.
+      const latestLocal = validate(getState());
+      if (uid && aquariumId) store.writeBackup(uid, aquariumId, latestLocal);
       aquariumId = ensured.result.aquariumId;
-      const parsed = adopt(validate(ensured.result.state), ensured.result.revision);
       conflict = null;
-      setStatus(STATUS.SYNCED);
+      const parsed = adopt(validate(ensured.result.state), ensured.result.revision);
       const settled = await settleAndAdopt({ gen, reason: 'conflict-cloud' });
       return { ok: true, resolution: 'cloud', state: parsed, settled };
     }
@@ -569,21 +626,26 @@ export function createSyncEngine({
     if (choice === 'local') {
       // 用本机覆盖云端之前：先取回云端最新状态。
       // 一是拿到最新 revision 做条件写入（避免再次冲突），二是把将被覆盖的云端版本归档为备份。
-      let targetRevision = conflict.cloudRevision;
-      const current = await api.ensureAquarium(pendingLocal, STATE_VERSION);
+      const candidate = validate(getState());
+      const current = await api.ensureAquarium(candidate, STATE_VERSION);
       if (stale(gen)) return { ok: false, skipped: 'stale' };
-      if (current.ok) {
-        if (uid) store.writeBackup(uid, current.result.aquariumId, current.result.state);
-        targetRevision = current.result.revision;
-        aquariumId = current.result.aquariumId;
-      } else if (current.result?.kind === 'unauthenticated') {
-        setStatus(STATUS.SIGNED_OUT, current.result.message || '');
-        return { ok: false, result: current.result };
+      if (!current.ok) {
+        const result = current.result || {};
+        if (result.kind === 'unauthenticated' || result.kind === 'forbidden') {
+          setStatus(STATUS.SIGNED_OUT, result.message || '');
+        } else {
+          setStatus(result.kind === 'offline' || !isOnline() ? STATUS.OFFLINE : STATUS.ERROR, result.message || '');
+        }
+        return { ok: false, result };
       }
 
+      const latestLocal = validate(getState());
+      if (uid) store.writeBackup(uid, current.result.aquariumId, current.result.state);
+      aquariumId = current.result.aquariumId;
+      const targetRevision = current.result.revision;
       conflict = null;
       if (Number.isFinite(Number(targetRevision))) baseRevision = Number(targetRevision);
-      const local = validate(pendingLocal);
+      const local = latestLocal;
       setState(local);
       baseCanonical = null;                 // 强制走一次真实写入
       if (uid && aquariumId) store.writePending(uid, aquariumId, local, baseRevision);
@@ -608,7 +670,15 @@ export function createSyncEngine({
     if (mode !== 'cloud') return { ok: true, skipped: 'guest' };
     if (conflict) return { ok: false, skipped: 'conflict' };
     const gen = generation;
+    const hydration = hydrationPromises.get(gen);
+    if (hydration) return hydration;
     if (!aquariumId || baseRevision === null || baseCanonical === null) return hydrate({ gen });
+
+    if (inFlight) {
+      const res = await inFlight;
+      if (stale(gen)) return { ok: false, skipped: 'stale' };
+      if (!res.ok) return res;
+    }
 
     if (isDirty()) {
       const res = await flush({ reason, gen });
@@ -634,7 +704,7 @@ export function createSyncEngine({
   function dispose() {
     disposed = true;
     generation += 1;
-    settleToken += 1; settling = false;
+    settleToken += 1; settling = false; settlePromise = null;
     clearSaveTimer();
   }
 

@@ -135,8 +135,11 @@ refresh();requestAnimationFrame(render);
 // 关键：启动时不主动写游客存档——否则一个从没玩过本机模式的访客，会在首次登录时被
 // 误判成「本机已有一份存档」，从而弹出本不必要「保留哪一份」的选择。
 setInterval(()=>{if(!document.hidden&&hasLocalChanges())persistLocal();},15000);
-document.addEventListener('visibilitychange',()=>{if(document.hidden){save();mutedByVisibility=audioCtx?.state==='running';if(mutedByVisibility)audioCtx.suspend();}else{if(engine.isCloud){engine.syncNow({reason:'visible'}).then(()=>refresh()).catch(()=>{});}else{const hours=catchUp(state);if(hours>.02)refresh();}if(mutedByVisibility)audioCtx?.resume().then(refresh).catch(()=>{});mutedByVisibility=false;}});
-window.addEventListener('pagehide',()=>{if(engine.isCloud){persistLocal();engine.flush({reason:'pagehide',keepalive:true});}else save();});
+function refreshCloudProgress(reason){if(engine.isCloud)engine.syncNow({reason}).then(()=>refresh()).catch(()=>{});}
+document.addEventListener('visibilitychange',()=>{if(document.hidden){save();if(engine.isCloud)engine.flush({reason:'hidden',keepalive:true}).catch(()=>{});mutedByVisibility=audioCtx?.state==='running';if(mutedByVisibility)audioCtx.suspend();}else{if(engine.isCloud){refreshCloudProgress('visible');}else{const hours=catchUp(state);if(hours>.02)refresh();}if(mutedByVisibility)audioCtx?.resume().then(refresh).catch(()=>{});mutedByVisibility=false;}});
+// 两个浏览器窗口可能同时可见；重新聚焦也要对账，避免只能手动刷新才能看到另一端进度。
+window.addEventListener('focus',()=>{if(!document.hidden)refreshCloudProgress('focus');});
+window.addEventListener('pagehide',()=>{if(engine.isCloud){persistLocal();engine.flush({reason:'pagehide',keepalive:true}).catch(()=>{});}else save();});
 window.addEventListener('online',()=>{engine.handleOnline();refresh();});
 window.addEventListener('offline',()=>{engine.handleOffline();});
 

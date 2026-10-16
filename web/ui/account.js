@@ -61,6 +61,8 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
 
   let activeTab = 'signin';
   let notice = null;
+  let syncBusy = false;
+  let conflictBusy = false;
   // 界面操作代次：登录/退出/回调都会 +1，晚到的响应若已经过期就丢弃，
   // 避免「换号后旧请求把上一个账号的状态写进界面」。
   let opToken = 0;
@@ -81,12 +83,31 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
     if (!els.dialog.open) els.dialog.showModal();
   }
 
-  function setNotice(text, kind = 'info') {
-    notice = text ? { text, kind } : null;
+  function setNotice(text, kind = 'info', scope = '') {
+    notice = text ? { text, kind, scope } : null;
     if (!els.notice) return;
     els.notice.textContent = text || '';
     els.notice.dataset.kind = kind;
     els.notice.hidden = !text;
+  }
+
+  // 同步提示跟随引擎当前状态，避免登录时的成功提示在断网/冲突后仍留在面板上。
+  function renderSyncNotice() {
+    const snap = engine.snapshot;
+    if (!snap.user || (notice && notice.scope !== 'sync')) return;
+    if (snap.conflict) setNotice('本机与云端各有改动，请选择保留哪一份；放弃的版本会留作备份。', 'warn', 'sync');
+    else if (snap.status === STATUS.SIGNED_OUT) setNotice('登录状态已失效，本机改动已保留。请退出后重新登录，再继续同步。', 'warn', 'sync');
+    else if (snap.status === STATUS.OFFLINE) setNotice('当前离线，进度先保存在本机；联网后会自动同步。', 'warn', 'sync');
+    else if (snap.status === STATUS.ERROR) setNotice('暂时没有同步成功，本机改动已保留。请稍后重试同步。', 'warn', 'sync');
+    else if (snap.dirty || snap.status === STATUS.SYNCING) setNotice(snap.dirty
+      ? '本机有新改动，正在等待同步完成。换设备前请确认显示“已同步”。'
+      : '正在检查云端最新进度…', 'info', 'sync');
+    else if (snap.status === STATUS.SYNCED) setNotice('已登录，当前进度已同步。切回此页面时会检查云端最新进度。', 'ok', 'sync');
+  }
+
+  function showSyncNotice() {
+    notice = null;
+    renderSyncNotice();
   }
 
   function setTab(tab) {
@@ -183,11 +204,19 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
     if (signedIn && !showReset) {
       els.sessionEmail.textContent = snap.user.email;
       const parts = [describeStatus(snap.status)];
-      if (snap.revision) parts.push(`revision ${snap.revision}`);
       if (snap.status === STATUS.OFFLINE) parts.push('联网后会自动同步');
       if (snap.dirty && snap.status !== STATUS.OFFLINE) parts.push('本机有未上传的改动');
       els.sessionDetail.textContent = parts.join(' · ');
-      if (els.syncNow) els.syncNow.disabled = snap.status === STATUS.SYNCING || Boolean(snap.conflict);
+      if (els.syncNow) {
+        const busy = syncBusy || Boolean(snap.busy);
+        els.syncNow.disabled = busy || conflictBusy || Boolean(snap.conflict) || snap.status === STATUS.SIGNED_OUT;
+        els.syncNow.textContent = busy ? '正在同步…' : snap.status === STATUS.ERROR ? '重试同步' : '立即同步';
+        els.syncNow.setAttribute('aria-busy', String(busy));
+      }
+      for (const el of [els.conflictKeepCloud, els.conflictKeepLocal, els.conflictLater]) {
+        if (el) el.disabled = conflictBusy;
+      }
+      renderSyncNotice();
     }
     renderConflict();
     renderBackups();
@@ -238,14 +267,12 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
     if (els.resend) els.resend.hidden = true;
     if (els.password) els.password.value = '';
     setNotice('已登录，正在对齐云端存档…');
-    const outcome = await engine.setSession(res.session);
+    await engine.setSession(res.session);
     if (isStale(token)) return;
     view = 'auto';
     store.clearAuthFlow?.();
     onSessionChange(res.session);
-    if (outcome?.conflict) setNotice('登录成功，但本机与云端各有一份存档，请选择保留哪一份。', 'warn');
-    else if (outcome?.offline) setNotice('已登录，但当前连不上云端，先用本机存档继续。', 'warn');
-    else setNotice('已登录，云端存档已对齐。');
+    showSyncNotice();
     render();
   }
 
@@ -272,11 +299,11 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
       setNotice('验证邮件已发出，请点开邮件里的链接完成验证，然后回来登录。', 'ok');
       return;
     }
-    const outcome = await engine.setSession(res.session);
+    await engine.setSession(res.session);
     if (isStale(token)) return;
     view = 'auto';
     onSessionChange(res.session);
-    setNotice(outcome?.conflict ? '注册成功，但需要先选择保留哪一份存档。' : '注册成功，云端存档已建立。', 'ok');
+    showSyncNotice();
     render();
   }
 
@@ -298,13 +325,22 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
   }
 
   async function doSynNow() {
-    setNotice('正在同步…');
-    const res = await engine.syncNow({ reason: 'manual' });
-    if (res?.skipped === 'unchanged') setNotice('没有需要同步的改动。', 'ok');
-    else if (res?.ok) setNotice('已同步到云端。', 'ok');
-    else if (res?.result?.message) setNotice(res.result.message, 'error');
-    else setNotice('同步没有完成，改动仍保存在本机。', 'warn');
+    if (syncBusy || conflictBusy || engine.snapshot.conflict) return;
+    const token = opToken;
+    const gen = engine.generation;
+    syncBusy = true;
+    setNotice('正在检查云端最新进度…', 'info', 'sync');
     render();
+    try {
+      await engine.syncNow({ reason: 'manual' });
+      if (isStale(token) || engine.generation !== gen) return;
+      showSyncNotice();
+    } catch {
+      if (!isStale(token) && engine.generation === gen) setNotice('同步没有完成，请稍后重试；换设备前先保留本机备份。', 'warn');
+    } finally {
+      syncBusy = false;
+      render();
+    }
   }
 
   async function doSignOut() {
@@ -329,15 +365,26 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
   }
 
   async function doConflict(choice) {
+    if (conflictBusy || syncBusy) return;
+    const token = opToken;
+    const gen = engine.generation;
+    conflictBusy = true;
     setNotice('正在处理…');
-    const res = await engine.resolveConflict(choice);
-    if (res?.skipped === 'later') { setNotice('已保留现状，稍后再处理。', 'warn'); render(); return; }
-    if (res?.ok) {
-      setNotice(choice === 'local' ? '已用本机存档更新云端。' : '已采用云端存档，本机改动留了备份。', 'ok');
-    } else {
-      setNotice(res?.result?.message || '处理没有完成，两份存档都还在。', 'error');
-    }
     render();
+    try {
+      const result = await engine.resolveConflict(choice);
+      if (isStale(token) || engine.generation !== gen) return;
+      if (result?.skipped === 'later') {
+        setNotice('已保留现状和本机改动，稍后再处理。', 'warn');
+        return;
+      }
+      showSyncNotice();
+    } catch {
+      if (!isStale(token) && engine.generation === gen) setNotice('处理没有完成，请保留本机备份并稍后重试。', 'error');
+    } finally {
+      conflictBusy = false;
+      render();
+    }
   }
 
   function doBackupExport() {
@@ -438,9 +485,7 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
     } else {
       view = 'auto';
       store.clearAuthFlow?.();
-      setNotice(outcome?.conflict
-        ? '邮箱已验证并登录，但请先选择保留哪一份存档。'
-        : '邮箱验证完成，已登录，存档已对齐。', 'ok');
+      showSyncNotice();
     }
     openDialog();
     render();

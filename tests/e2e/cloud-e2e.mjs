@@ -240,6 +240,15 @@ async function main() {
   await deviceA.click('.fish-card');
   await deviceA.evaluate(`document.getElementById('fish-name').value='阿花'`);
   await deviceA.click('#rename');
+  const pendingChip = await deviceA.evaluate(`document.getElementById('cloud-status').textContent`);
+  check('去抖等待期间不提前显示已同步', pendingChip !== '已同步', `chip=${pendingChip}`);
+  await deviceA.evaluate(`document.getElementById('fish-dialog').close()`);
+  await deviceA.click('#account-button');
+  const pendingSyncEnabled = await deviceA.evaluate(`!document.getElementById('session-sync-now').disabled`);
+  const pendingNotice = await deviceA.evaluate(`document.getElementById('account-notice').textContent`);
+  check('等待自动上传时仍可手动立即同步', pendingSyncEnabled === true);
+  check('未上传提示提醒更换设备前等待完成', /本机有新改动/.test(pendingNotice) && /换设备/.test(pendingNotice), pendingNotice);
+  await deviceA.evaluate(`document.getElementById('account-dialog').close()`);
   await sleep(3200);   // 等过去抖窗口
   const savesAfter = fakeServer.requests.filter(r => r.path.includes('save_aquarium')).length;
   const rowA = [...fake.aquariums.values()][0];
@@ -262,6 +271,8 @@ async function main() {
   await deviceB.evaluate(`document.getElementById('account-dialog').close()`);
 
   // ---- 场景 5：同 revision 冲突与两种处理 ----
+  // B 先离线，保留旧基线；正常在线切回窗口现在会自动检查云端新进度。
+  await deviceB.send('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
   await deviceA.front();
   await deviceA.click('.fish-card');
   await deviceA.evaluate(`document.getElementById('fish-name').value='A 改的'`);
@@ -272,6 +283,8 @@ async function main() {
   await deviceB.click('.fish-card');
   await deviceB.evaluate(`document.getElementById('fish-name').value='B 改的'`);
   await deviceB.click('#rename');
+  await deviceB.send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+  await deviceB.evaluate(`window.dispatchEvent(new Event('online'))`);
   await sleep(3200);
   const chipConflict = await deviceB.evaluate(`document.getElementById('cloud-status').textContent`);
   const bDiag = await deviceB.evaluate(`JSON.stringify({hidden:document.hidden,vis:document.visibilityState,keys:Object.keys(localStorage).length,pending:Object.keys(localStorage).filter(k=>k.includes('pending')).length,focus:document.hasFocus()})`);
@@ -283,6 +296,8 @@ async function main() {
   await deviceB.click('#account-button');
   const conflictVisible2 = await deviceB.evaluate(`!document.getElementById('conflict-box').hidden`);
   check('冲突处理界面可见', conflictVisible2 === true);
+  const conflictNotice = await deviceB.evaluate(`document.getElementById('account-notice').textContent`);
+  check('冲突时账号提示不残留登录成功或已对齐', /各有改动/.test(conflictNotice), conflictNotice);
   check('未处理前云端数据不被覆盖', cloudStillA === 'A 改的', `云端=${cloudStillA}`);
   await deviceB.shot('03-conflict-desktop.png');
 
@@ -415,6 +430,10 @@ async function main() {
   check('离线时状态显示为离线', offlineChip === '离线', `chip=${offlineChip}`);
   const pendingKeys = await deviceC.evaluate(`(()=>{const out=[];for(let i=0;i<localStorage.length;i++){const k=String(localStorage.key(i));if(k.includes('pending'))out.push(k);}return out;})()`);
   check('离线改动以未同步副本存在本机', pendingKeys.length === 1, `pending 键=${pendingKeys.join(',')}`);
+  await deviceC.click('#account-button');
+  const offlineNotice = await deviceC.evaluate(`document.getElementById('account-notice').textContent`);
+  check('离线时账号提示本机保留与自动重连', /当前离线/.test(offlineNotice) && /自动同步/.test(offlineNotice), offlineNotice);
+  await deviceC.evaluate(`document.getElementById('account-dialog').close()`);
 
   await deviceC.send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   await sleep(800);
@@ -438,6 +457,31 @@ async function main() {
   const afterSecond = [...fake.aquariums.values()][0].state.fish[0].growth;
   check('服务端结算 1 小时成长（+0.008）', Math.abs(afterGrowth - (beforeGrowth + 0.008)) < 1e-6, `${beforeGrowth} → ${afterGrowth}`);
   check('重复同步不会重复奖励', afterSecond === afterGrowth, `${afterGrowth} → ${afterSecond}`);
+
+  // 模拟另一端已提交的新版本：可见窗口重新获得焦点时应拉回，无需重新登录。
+  const remoteRow = [...fake.aquariums.values()][0];
+  remoteRow.state.fish[0].name = '另一端更新的鱼名';
+  remoteRow.revision += 1;
+  await deviceC.evaluate(`window.dispatchEvent(new Event('focus'))`);
+  await sleep(800);
+  const focusedName = await deviceC.evaluate(`document.querySelector('.fish-card b').textContent`);
+  check('重新聚焦可见窗口自动恢复云端新进度', focusedName === '另一端更新的鱼名', focusedName);
+
+  // 模拟移动端切后台：不能依赖可能被冻结的 2.5 秒去抖定时器。
+  const hiddenSavesBefore = fakeServer.requests.filter(r => r.path.includes('save_aquarium')).length;
+  await deviceC.evaluate(`(()=>{
+    document.querySelector('.fish-card').click();
+    document.getElementById('fish-name').value='切后台前的改名';
+    document.getElementById('rename').click();
+    Object.defineProperty(document,'hidden',{configurable:true,get:()=>true});
+    try { document.dispatchEvent(new Event('visibilitychange')); }
+    finally { delete document.hidden; }
+  })()`);
+  const hiddenDeadline = Date.now() + 1500;
+  while (remoteRow.state.fish[0].name !== '切后台前的改名' && Date.now() < hiddenDeadline) await sleep(25);
+  const hiddenSavesAfter = fakeServer.requests.filter(r => r.path.includes('save_aquarium')).length;
+  check('切后台立即上传本机改动，不等待去抖定时器',
+    remoteRow.state.fish[0].name === '切后台前的改名' && hiddenSavesAfter - hiddenSavesBefore === 1);
 
   // ---- 场景 9：CSP 与前端错误 ----
   const cspHeader = await deviceC.evaluate(`fetch(location.href,{method:'HEAD'}).then(r=>r.headers.get('content-security-policy'))`);

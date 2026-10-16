@@ -217,6 +217,38 @@ test('两台设备同 revision：只有先写入的成功，后者拿到冲突�
     '基线比云端最新版本旧，恢复时才能据此判断云端被改过');
 });
 
+test('登录对账期间多个 syncNow 调用复用同一次 hydrate', async () => {
+  const started = deferred();
+  const response = deferred();
+  let holdEnsure = false;
+  const h = createHarness({
+    gate: async (ctx) => {
+      if (holdEnsure && ctx.path.endsWith('ensure_aquarium')) {
+        holdEnsure = false;
+        started.resolve();
+        await response.promise;
+      }
+    }
+  });
+  const session = await h.register();
+  holdEnsure = true;
+
+  const first = h.engine.setSession(session.session);
+  await started.promise;
+  const ensuresAtGate = h.countRequests('ensure_aquarium');
+  const second = h.engine.syncNow({ reason: 'focus-during-login' });
+  assert.equal(h.countRequests('ensure_aquarium'), ensuresAtGate, '焦点/可见事件不能再发一份开缸对账');
+  assert.equal(h.engine.snapshot.busy, true);
+
+  response.resolve();
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.equal(firstResult.ok, true);
+  assert.equal(secondResult.ok, true);
+  assert.equal(h.countRequests('ensure_aquarium'), ensuresAtGate);
+  assert.equal(h.engine.snapshot.busy, false, 'hydrate 结束后应通知界面释放 busy');
+  assert.equal(h.statuses.at(-1).busy, false, '最后一次状态回调也必须反映 hydrate 已结束');
+});
+
 test('冲突处理：选择保留本机 → 以最新 revision 重试并成功', async () => {
   const [deviceA, deviceB] = makeDevices(2);
   const sessionA = await deviceA.register();
@@ -274,6 +306,62 @@ test('冲突处理：选择保留云端 → 采用云端存档，本机改动归
   const backups = deviceB.store.listBackups(uid, aquariumId);
   assert.equal(backups.length, 1, '本机改动必须留下备份，不能消失');
   assert.equal(backups[0].state.fish[0].name, '本机要保留的');
+});
+
+test('冲突显示后继续编辑：两种解决选择都使用或备份最新本机状态', async () => {
+  for (const choice of ['local', 'cloud']) {
+    const fake = createFakeSupabase({ startMs: START });
+    const ensureStarted = deferred();
+    const ensureRelease = deferred();
+    let holdEnsure = false;
+    const gate = async (ctx) => {
+      if (holdEnsure && ctx.path.endsWith('ensure_aquarium')) {
+        holdEnsure = false;
+        ensureStarted.resolve();
+        await ensureRelease.promise;
+      }
+    };
+    const deviceA = createHarness({ fake, gate });
+    const deviceB = createHarness({ fake, gate });
+    const sessionA = await deviceA.register();
+    await deviceA.engine.setSession(sessionA.session);
+    const sessionB = await deviceB.stack.auth.signIn({ email: 'me@example.com', password: 'goodpassword' });
+    await deviceB.engine.setSession(sessionB.session);
+
+    deviceA.current.fish[0].name = '另一台设备已保存';
+    deviceA.engine.markDirty();
+    await deviceA.runTimers();
+    await Promise.resolve();
+
+    deviceB.current.plants = 7;
+    await deviceB.engine.flush({ reason: 'conflict-edit-test' });
+    assert.equal(deviceB.engine.status, STATUS.CONFLICT);
+
+    const uid = sessionB.session.user.id;
+    const aquariumId = deviceB.engine.snapshot.aquariumId;
+
+    holdEnsure = true;
+    const resolving = deviceB.engine.resolveConflict(choice);
+    await ensureStarted.promise;
+    deviceB.current.fish[0].name = '冲突处理期间又改的名字';
+    assert.equal(deviceB.engine.markDirty(), true, '冲突处理请求在途时仍需记录本机编辑');
+    assert.equal(deviceB.store.readPending(uid, aquariumId).state.fish[0].name, '冲突处理期间又改的名字');
+    ensureRelease.resolve();
+    const resolved = await resolving;
+    assert.equal(resolved.ok, true, `${choice} 解决应成功`);
+    const backups = deviceB.store.listBackups(uid, aquariumId);
+    if (choice === 'local') {
+      const server = [...deviceB.fake.aquariums.values()][0];
+      assert.equal(server.state.fish[0].name, '冲突处理期间又改的名字', '选择本机时上传最后一笔编辑');
+      assert.equal(server.state.plants, 7);
+      assert.equal(backups.length, 1, '被覆盖的云端版本先备份');
+    } else {
+      assert.equal(deviceB.current.fish[0].name, '另一台设备已保存', '选择云端后采用服务端版本');
+      assert.equal(backups.length, 1);
+      assert.equal(backups[0].state.fish[0].name, '冲突处理期间又改的名字', '后续编辑必须进入本地备份');
+      assert.equal(backups[0].state.plants, 7);
+    }
+  }
 });
 
 // ------------------------------------------------------------------ 旧存档与用户选择
@@ -347,11 +435,31 @@ test('去抖：连续修改只写一次；内容没变则完全不发请求', as
   await h.runTimers();
   await new Promise(r => setTimeout(r, 0));
   assert.equal(h.countRequests('save_aquarium') - baseline, 1, '合并成一次写入');
+  assert.equal(h.statuses.at(-1).busy, false, '完成回调必须通知界面实际请求已结束');
 
   // 内容没变 → 不排队、不请求
   h.engine.markDirty();
   assert.equal(h.timers.size, 0);
   assert.equal(h.countRequests('save_aquarium') - baseline, 1);
+});
+
+test('去抖窗口内明确显示待同步；编辑撤销后恢复已同步', async () => {
+  const h = createHarness();
+  const session = await h.register();
+  await h.engine.setSession(session.session);
+
+  h.current.plants = 4;
+  assert.equal(h.engine.markDirty(), true);
+  assert.equal(h.engine.status, STATUS.SYNCING, '去抖等待期间不能继续声称已同步');
+  assert.equal(h.engine.snapshot.dirty, true);
+  assert.equal(h.engine.snapshot.busy, false, '去抖等待还没有进入网络请求');
+  assert.equal(h.countRequests('save_aquarium'), 0);
+
+  h.current.plants = 3;
+  assert.equal(h.engine.markDirty(), false, '改回已确认状态后撤销待写入');
+  assert.equal(h.engine.status, STATUS.SYNCED);
+  assert.equal(h.engine.snapshot.dirty, false);
+  assert.equal(h.engine.pendingSaveScheduled, false);
 });
 
 test('定时器只有去抖用途：没有固定轮询（所有定时器都等于 debounce 间隔）', async () => {
@@ -378,6 +486,7 @@ test('页面关闭时的最后一次写入使用 keepalive', async () => {
   await h.engine.flush({ reason: 'pagehide', keepalive: true });
   seen.push(true);
   assert.equal(h.lastStatus, STATUS.SYNCED);
+  assert.equal(h.statuses.at(-1).busy, false);
   assert.equal(seen.length, 1);
 });
 
@@ -407,6 +516,25 @@ test('离线：改动留在本机，状态显示离线；重连后自动写入',
   const server = [...h.fake.aquariums.values()][0];
   assert.equal(server.state.fish[0].name, '离线时改的');
   assert.equal(h.store.readPending(uid, aquariumId), null);
+});
+
+test('离线时 markDirty 只落本地，不把待同步改动显示成同步中', async () => {
+  const h = createHarness();
+  const session = await h.register();
+  await h.engine.setSession(session.session);
+  const requestsBefore = h.requests.length;
+  h.setOnline(false);
+
+  h.current.fish[0].name = '离线编辑';
+  assert.equal(h.engine.markDirty(), true);
+  assert.equal(h.engine.status, STATUS.OFFLINE);
+  assert.equal(h.engine.snapshot.dirty, true);
+  assert.equal(h.engine.pendingSaveScheduled, false);
+  assert.equal(h.requests.length, requestsBefore, '离线编辑无需发起失败的网络请求');
+
+  const uid = session.session.user.id;
+  const aquariumId = h.engine.snapshot.aquariumId;
+  assert.equal(h.store.readPending(uid, aquariumId).state.fish[0].name, '离线编辑');
 });
 
 test('服务端 5xx：不丢档，保留待同步并显示失败', async () => {
@@ -1055,6 +1183,67 @@ test('[P1-5] 成长结算期间本地编辑不被旧结算快照覆盖或清除'
     '服务端成长只由这次结算记一次');
   assert.equal(h.countRequests('settle_growth') - settlesBefore, 1);
   assert.equal(h.countRequests('save_aquarium') - savesBefore, 0, '未选择如何处理前不能上传旧的本地基线');
+});
+
+test('结算期间并发 syncNow 会等待同一结果，不提前报告完成或重复结算', async () => {
+  const h = directApiHarness(['alice']);
+  const { engine } = directEngine(h.api);
+  const session = { user: { id: 'alice', email: 'alice@example.com' } };
+  h.setTargetAccount('alice');
+  await engine.setSession(session);
+  const before = h.settles.length;
+  const gate = { started: deferred(), response: deferred() };
+  h.settleGates.set('aquarium-alice', gate);
+
+  const first = engine.syncNow({ reason: 'manual-first' });
+  await gate.started.promise;
+  assert.equal(engine.status, STATUS.SYNCING, '自动或手动结算期间都应显示同步中');
+  assert.equal(engine.snapshot.busy, true);
+
+  let secondDone = false;
+  const second = engine.syncNow({ reason: 'manual-second' }).then((result) => {
+    secondDone = true;
+    return result;
+  });
+  await Promise.resolve();
+  assert.equal(secondDone, false, '第二个调用等待正在进行的结算');
+  assert.equal(h.settles.length, before + 1, '只允许一笔结算 RPC');
+
+  gate.response.resolve({
+    ok: true,
+    result: { state: cloneState(h.rows.get('alice').state), revision: 1, creditedSeconds: 0 }
+  });
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.equal(firstResult.ok, true);
+  assert.equal(secondResult.ok, true);
+  assert.equal(secondResult.skipped, undefined, '并发调用应收到结算结果，而非提前返回 skipped');
+  assert.equal(engine.snapshot.busy, false);
+  assert.equal(engine.status, STATUS.SYNCED);
+});
+
+test('成长结算临时失败会释放 busy，并可通过下一次 syncNow 恢复', async () => {
+  const failure = { enabled: false };
+  const h = createHarness({
+    overrides: {
+      rules: [(ctx) => (failure.enabled && ctx.path.endsWith('settle_growth')
+        ? { ok: false, status: 503, async text() { return JSON.stringify({ message: 'upstream down' }); } }
+        : null)]
+    }
+  });
+  const session = await h.register();
+  await h.engine.setSession(session.session);
+
+  failure.enabled = true;
+  const failed = await h.engine.syncNow({ reason: 'settle-failure' });
+  assert.equal(failed.ok, false);
+  assert.equal(h.engine.status, STATUS.ERROR);
+  assert.equal(h.engine.snapshot.busy, false, '失败后锁和 busy 状态都要释放');
+
+  failure.enabled = false;
+  const recovered = await h.engine.syncNow({ reason: 'settle-retry' });
+  assert.equal(recovered.ok, true);
+  assert.equal(h.engine.status, STATUS.SYNCED);
+  assert.equal(h.engine.snapshot.busy, false);
 });
 
 test('[P1-6] 全新引擎离线冷启动恢复账号鱼缸指针，后续改动仍能落盘并恢复', async () => {
