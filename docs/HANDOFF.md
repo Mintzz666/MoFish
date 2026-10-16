@@ -39,6 +39,15 @@ Cloudflare 独立测试入口已部署；尚未合并 main、未打产品版本�
 - Supabase changelog 域名不在本环境出站白名单，请求 CONNECT 403，未绕过代理；
   本轮不新增 Supabase 功能或 API，仅复用既有 Admin GET 进行凭据预检，并已真实验证。
 
+## 后续密码重置失败定位
+
+用户 Safari 点击重置邮件后落到 `localhost:3000` 无法连接，密码重置验收更新为失败待修复。
+用本轮单独创建的随机临时账号生成 recovery 链接（不发信）复现：指定线上 redirect_to 仍回退 localhost；
+默认地址也为 localhost。测试账号已删除并由 GoTrue 404 确认，无令牌写日志。
+应用代码传入正确线上回调，无需先改前端或重新部署。
+当前连接缺少 Auth URL 配置修改接口，待用户在 Supabase URL Configuration 设置 Site URL 及 Redirect URLs 后，
+Codex 重跑无发信诊断，用户再从线上申请新邮件完成真实改密。具体步骤见验收文档的“密码重置回调阻塞”。
+
 ## 范围和架构
 
 本阶段实现邮箱密码注册、验证、登录、重置密码，以及单用户跨设备云存档：

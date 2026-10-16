@@ -23,7 +23,7 @@
 | 浏览器操作、回调、换号、离线重连、冲突备份 | 57 项真实 dist + 本地假后端浏览器检查通过，含 390/320px | 自动化通过；不替代真实云端用户流程 |
 | 公开认证接口与匿名权限 | 前轮 `/auth/v1/settings` 200 且邮箱确认开启；`/auth/v1/user` 未登录返回 401；鱼缸表读取及三个 RPC 均返回 401 / PostgreSQL `42501` | 6 项通过；没有读取已有用户存档或发送邮件 |
 | 真实登录后的刷新、跨账号 HTTP 拒绝与完整冒烟 | 本轮 `NODE_USE_ENV_PROXY=1 npm run test:cloud`：23/23 通过，含只读管理预检及两个随机临时账号删除后 GoTrue 404 确认 | 通过；第二设备为独立 SDK 会话，不是真机 UI |
-| 真实密码重置 | 用户本轮明确回复“还没测，等待你的指导和测试” | 未测；待用户实测 |
+| 真实密码重置 | 用户 Safari 打开邮件后跳到 `localhost:3000` 失败；随机临时账号生成 recovery 链接时，即使指定线上 redirect_to 也回退 localhost | 已复现失败；待修复 Auth URL 配置后重新发信复测 |
 | 新版真实离线恢复、冲突、退出换号 | 用户本轮明确尚未测试；本地回归及云端 RPC 冲突不能替代设备 UI 验收 | 未测；待用户实测 |
 
 前轮因缺少变量停止的记录仍是未通过；本轮已配置并完成新的完整云端冒烟，解除该自动化阻塞。
@@ -39,6 +39,23 @@ SMTP、模板和跳转白名单的控制台配置没有完整核验；注册确�
 
 在当前 Node 24 云环境，HTTP 请求须沿用环境代理：`NODE_USE_ENV_PROXY=1 npm run test:cloud`。
 这只是当前验收执行方式，不能通过取消代理或关闭 TLS 验证绕过网络限制。
+
+## 密码重置回调阻塞（本轮后续发现）
+
+用户真实 Safari 测试失败：邮件验证后的 recovery 回调落到 `http://localhost:3000`，本地无服务而无法打开。
+源码 `web/app.js` 已传入 `location.origin + location.pathname`，重置请求使用 SDK `redirectTo`。
+Codex 仅创建一个随机临时账号，通过 Admin generate_link（不发邮件、不打开或输出令牌链接）验证：
+显式请求 `https://mofish.tibo-reset-notifier.workers.dev/` 及不指定回调，两次均 HTTP 200，
+但生成结果的 `redirect_to` 均为 `http://localhost:3000`。
+账号 DELETE HTTP 200，随后 GoTrue 404 `user_not_found` 确认清理；未访问已有用户存档。
+证据：`/workspace/reviews/mofish-phase-a-final-20261016-r2/recovery-redirect.log`（只有地址和状态，无令牌）。
+
+现有 Supabase 集成不提供 Auth URL 配置修改接口，service_role 也不是 Management API 凭据。
+需用户打开项目 Authentication → URL Configuration，将 Site URL 设为线上根地址，
+并在 Redirect URLs 加入同一个完整地址（包括结尾 `/`），保留其他合法回调。
+保存后先由 Codex 重跑无发信的临时账号回调检查，再由用户从线上站点重新申请重置邮件，使用最新链接完成改密和重新登录。
+不要复用已消费的旧链接，也不手工转移截图中的令牌；截图包含会话信息，不再传播。
+此配置修复不需要重新部署 Worker，不能改变 Tibo 或旧 Sites 配置。
 
 ## 用户设备补验操作
 
