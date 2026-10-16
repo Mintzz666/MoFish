@@ -1,25 +1,30 @@
 # MoFish
 
-一个用来短暂休息的电子鱼缸。原创 Canvas 2D 鱼、水草和光影，无外部图片、字体或运行依赖。
+一个用来短暂休息的电子鱼缸。原创 Canvas 2D 鱼、水草和光影；认证 SDK 随站点打包发布，不从外部 CDN 加载代码、图片或字体。
 
 游客模式完全在本机运行，不需要账号；也可以注册邮箱账号，把鱼缸同步到云端，在多台设备上接着养。
 
 ## 运行
 
-需要 Node.js 20+（测试与打包）、Python 3（本地静态服务）。
+需要 Node.js 22+ 与 npm（测试、打包及本地预览）。
 
 ```sh
+npm ci
 npm start
-# 浏览器访问 http://localhost:5173
+# 构建后启动预览，浏览器访问 http://127.0.0.1:5173
 npm test          # 逻辑与同步单元测试（含真实 Postgres 引擎上的 RLS/迁移集成测试）
 npm run build     # 生成 dist/
 npm run preview   # 服务 dist/ 并应用 _headers（含 CSP），用于部署前自检
 npm run test:e2e  # 浏览器端到端（需要本机 Chrome；用本地假后端模拟云服务）
-npm run test:concurrency   # 成长结算的真实多连接并发测试（需要真实 Postgres，见 docs/CLOUD-SETUP.md）
+npm run test:concurrency   # 安全隔离检查及自建临时 Postgres 多连接测试（见 docs/CLOUD-SETUP.md）
 ```
 
 `dist/` 可部署至 Cloudflare Workers 静态资源、GitHub Pages 或任意 HTTPS 静态托管。无需常驻应用服务器。
 首次加载完成后通过 Service Worker 缓存静态资源，可离线使用；浏览器安装方式因平台而异。
+
+浏览器测试可通过 `MOFISH_CHROME_PATH` 指定 Chrome/Chromium；每轮使用独立临时 profile 和调试端口。
+测试退出会关闭自己启动的浏览器与服务，默认清理临时产物；失败或传入 `--keep` 时保留截图/结果用于排查。
+只在受信任的隔离环境确有需要时设置 `MOFISH_CHROME_NO_SANDBOX=1`，不要用于日常浏览。
 
 ## 云存档（阶段 A）
 

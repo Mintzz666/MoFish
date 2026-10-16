@@ -15,7 +15,7 @@ import { createFakeFetch, networkFailure } from './fake-supabase/server.mjs';
 
 const ANON = makeAccessToken('anon', { role: 'anon' });
 
-function setup({ startMs = 1_700_000_000_000, onRequest } = {}) {
+function setup({ startMs = Date.now(), onRequest } = {}) {
   const fake = createFakeSupabase({ startMs });
   let nowMs = startMs;
   const requests = [];
@@ -166,11 +166,11 @@ test('会话过期自动刷新，刷新失败则清除会话', async () => {
     anonKey: ANON,
     fetchImpl: createFakeFetch(fake, {
       onRequest: ({ path }) => (path === '/auth/v1/token'
-        ? { ok: false, status: 400, async text() { return JSON.stringify({ error_code: 'refresh_token_not_found', msg: 'Invalid Refresh Token' }); } }
+        ? new Response(JSON.stringify({ error_code: 'refresh_token_not_found', msg: 'Invalid Refresh Token' }), { status: 400 })
         : null)
     }),
     store,
-    now: () => Date.now()
+    now: () => fake.clock() + 3_600_000
   });
   const failed = await broken.getSession();
   assert.equal(failed.ok, false);
@@ -192,6 +192,111 @@ test('并发刷新只发一次请求', async () => {
   const [a, b, c] = await Promise.all([auth.refresh(), auth.refresh(), auth.refresh()]);
   assert.ok(a.ok && b.ok && c.ok);
   assert.equal(refreshCalls, 1, '三个并发刷新共用一次请求');
+});
+
+test('退出并登录新账号后，迟到的旧账号刷新成功不能覆盖新会话', async () => {
+  let holdRefresh = false;
+  let signalRefreshStarted;
+  let releaseRefresh;
+  const refreshStarted = new Promise(resolve => { signalRefreshStarted = resolve; });
+  const { auth, fake, store } = setup({
+    onRequest: ({ path, url }) => {
+      if (!holdRefresh || path !== '/auth/v1/token' || url.searchParams.get('grant_type') !== 'refresh_token') return null;
+      return new Promise(resolve => {
+        releaseRefresh = () => {
+          const result = fake.issueSession(fake.users.get('a@example.com'));
+          resolve(new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        };
+        signalRefreshStarted();
+      });
+    }
+  });
+  await registerConfirmed(fake, auth, 'a@example.com');
+  await registerConfirmed(fake, auth, 'b@example.com');
+  const a = await auth.signIn({ email: 'a@example.com', password: 'goodpassword' });
+
+  holdRefresh = true;
+  const oldRefresh = auth.refresh(a.session.refresh_token);
+  await refreshStarted;
+  await auth.signOut();
+  const b = await auth.signIn({ email: 'b@example.com', password: 'goodpassword' });
+  assert.equal(store.readSession().user.id, b.session.user.id);
+
+  releaseRefresh();
+  await oldRefresh;
+  assert.equal(store.readSession()?.user.id, b.session.user.id, 'A 的刷新结果不得覆盖 B');
+});
+
+test('退出并登录新账号后，迟到的旧账号刷新失败不能清除新会话', async () => {
+  let holdRefresh = false;
+  let signalRefreshStarted;
+  let releaseRefresh;
+  const refreshStarted = new Promise(resolve => { signalRefreshStarted = resolve; });
+  const { auth, fake, store } = setup({
+    onRequest: ({ path, url }) => {
+      if (!holdRefresh || path !== '/auth/v1/token' || url.searchParams.get('grant_type') !== 'refresh_token') return null;
+      return new Promise(resolve => {
+        releaseRefresh = () => resolve(new Response(JSON.stringify({
+          error_code: 'refresh_token_not_found', msg: 'Invalid Refresh Token'
+        }), { status: 400, headers: { 'Content-Type': 'application/json' } }));
+        signalRefreshStarted();
+      });
+    }
+  });
+  await registerConfirmed(fake, auth, 'a@example.com');
+  await registerConfirmed(fake, auth, 'b@example.com');
+  const a = await auth.signIn({ email: 'a@example.com', password: 'goodpassword' });
+
+  holdRefresh = true;
+  const oldRefresh = auth.refresh(a.session.refresh_token);
+  await refreshStarted;
+  await auth.signOut();
+  const b = await auth.signIn({ email: 'b@example.com', password: 'goodpassword' });
+  assert.equal(store.readSession().user.id, b.session.user.id);
+
+  releaseRefresh();
+  await oldRefresh;
+  assert.equal(store.readSession()?.user.id, b.session.user.id, 'A 的刷新失败不得清除 B');
+});
+
+test('换号后迟到的邮件回调查询不能写入旧账号会话', async () => {
+  let holdCallback = false;
+  let callbackToken = '';
+  let signalCallbackStarted;
+  let releaseCallback;
+  const callbackStarted = new Promise(resolve => { signalCallbackStarted = resolve; });
+  const { auth, fake, store } = setup({
+    onRequest: ({ path, headers, url }) => {
+      if (!holdCallback || path !== '/auth/v1/user' || headers.authorization !== `Bearer ${callbackToken}`) return null;
+      return new Promise(resolve => {
+        releaseCallback = () => {
+          const result = fake.handleAuth('GET', path, url.searchParams, headers, null);
+          resolve(new Response(result.body == null ? null : JSON.stringify(result.body), {
+            status: result.status, headers: { 'Content-Type': 'application/json' }
+          }));
+        };
+        signalCallbackStarted();
+      });
+    }
+  });
+  await registerConfirmed(fake, auth, 'a@example.com');
+  await registerConfirmed(fake, auth, 'b@example.com');
+  const aSession = fake.issueSession(fake.users.get('a@example.com'));
+  callbackToken = aSession.access_token;
+  const callback = {
+    kind: 'session', type: 'signup', accessToken: aSession.access_token,
+    refreshToken: aSession.refresh_token, expiresIn: aSession.expires_in
+  };
+
+  holdCallback = true;
+  const oldCallback = auth.acceptCallbackSession(callback);
+  await callbackStarted;
+  const b = await auth.signIn({ email: 'b@example.com', password: 'goodpassword' });
+  assert.equal(store.readSession().user.id, b.session.user.id);
+
+  releaseCallback();
+  await oldCallback;
+  assert.equal(store.readSession().user.id, b.session.user.id, '回调查询 A 不得覆盖 B');
 });
 
 test('退出登录：即使远端失败也清掉本地会话', async () => {
@@ -289,11 +394,11 @@ test('刷新失败要区分「凭据失效」与「暂时连不上」（评审 P
     anonKey: ANON,
     fetchImpl: createFakeFetch(fake, {
       onRequest: ({ path }) => (path === '/auth/v1/token'
-        ? { ok: false, status: 400, async text() { return JSON.stringify({ error_code: 'refresh_token_not_found', msg: 'Invalid Refresh Token' }); } }
+        ? new Response(JSON.stringify({ error_code: 'refresh_token_not_found', msg: 'Invalid Refresh Token' }), { status: 400 })
         : null)
     }),
     store,
-    now: () => Date.now() + 3_600_000
+    now: () => fake.clock() + 3_600_000
   });
   const invalidResult = await invalid.getSession();
   assert.equal(invalidResult.ok, false);
@@ -316,7 +421,7 @@ test('刷新失败要区分「凭据失效」与「暂时连不上」（评审 P
     anonKey: ANON,
     fetchImpl: networkFailure('offline'),
     store: offlineStore,
-    now: () => Date.now() + 3_600_000
+    now: () => fake.clock() + 3_600_000
   });
   const offlineResult = await offline.getSession();
   assert.equal(offlineResult.ok, false);
@@ -329,15 +434,23 @@ test('刷新失败要区分「凭据失效」与「暂时连不上」（评审 P
   const serverAuth = createAuthClient({ url: 'https://demo.supabase.co', anonKey: ANON, fetchImpl: createFakeFetch(fake), store: serverStore, now: () => Date.now() });
   await registerConfirmed(fake, serverAuth);
   await serverAuth.signIn({ email: 'a@example.com', password: 'goodpassword' });
+  let refreshAttempts = 0;
   const down = createAuthClient({
     url: 'https://demo.supabase.co',
     anonKey: ANON,
-    fetchImpl: async () => ({ ok: false, status: 503, async text() { return '{}'; } }),
+    fetchImpl: async () => {
+      refreshAttempts++;
+      return new Response('{}', { status: 503 });
+    },
     store: serverStore,
-    now: () => Date.now() + 3_600_000
+    now: () => fake.clock() + 3_600_000
   });
   const downResult = await down.getSession();
   assert.equal(downResult.reason, 'offline');
+  assert.equal(downResult.error.code, 'server_error');
+  assert.equal(downResult.error.retryable, true);
+  assert.equal(downResult.error.status, 503);
+  assert.equal(refreshAttempts, 1, '5xx 刷新只请求一次，不等待 SDK 的 30 秒重试周期');
   assert.ok(serverStore.readSession(), '服务端临时故障时不得清除凭据');
 });
 
@@ -364,11 +477,13 @@ test('服务端返回非 JSON（例如网关 HTML 报错页）也不崩，映射
   const auth = createAuthClient({
     url: 'https://demo.supabase.co',
     anonKey: ANON,
-    fetchImpl: async () => ({ ok: false, status: 502, async text() { return '<html>Bad Gateway</html>'; } }),
+    fetchImpl: async () => new Response('<html>Bad Gateway</html>', { status: 502 }),
     store: createLocalStore(createMemoryStorage())
   });
   const res = await auth.signIn({ email: 'a@example.com', password: 'goodpassword' });
   assert.equal(res.ok, false);
+  assert.equal(res.status, 502);
   assert.equal(res.error.code, 'server_error');
+  assert.equal(res.error.status, 502);
   assert.equal(res.error.retryable, true);
 });

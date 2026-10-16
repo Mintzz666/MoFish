@@ -7,6 +7,7 @@
 
 import { cp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { readCloudConfig, classifyKey } from './web/cloud/config.js';
+import { build } from 'esbuild';
 
 const url = (process.env.MOFISH_SUPABASE_URL || '').trim();
 const anonKey = (process.env.MOFISH_SUPABASE_ANON_KEY || '').trim();
@@ -42,6 +43,16 @@ if (url || anonKey) {
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist', { recursive: true });
 await cp('web', 'dist', { recursive: true });
+await build({
+  entryPoints: ['web/cloud/auth.js'],
+  outfile: 'dist/cloud/auth.js',
+  bundle: true,
+  platform: 'browser',
+  format: 'esm',
+  target: ['es2022'],
+  minify: true,
+  legalComments: 'none'
+});
 
 if (resolved) {
   await writeFile('dist/config.js', configModule({

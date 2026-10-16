@@ -1,13 +1,12 @@
-// Supabase Auth（GoTrue）REST 客户端。
-//
-// 为什么不用官方 JS SDK：本项目刻意保持零第三方运行时代码与零构建依赖，且用户网络环境下
-// CDN 并不总是可达。这里只用到 6 个经过公开文档确认的 REST 端点，全部走 fetch。
-// 密码的存储、哈希、校验、发信与限流全部由 Supabase Auth 负责，本文件不接触也不保存密码。
+// Supabase Auth facade，底层使用官方 auth-js，并由构建打进本地静态资源。
+// 密码的存储、哈希、校验、发信与限流由 Supabase Auth 负责；前端仅临时传递密码，不保存它。
 //
 // 认证流程：邮箱 + 密码（implicit 流程）。不发送 code_challenge，因此验证/重置邮件里的链接
 // 会把 token 放在 URL fragment（#access_token=...）返回，由前端读取后立刻从地址栏清除。
 // 已知取舍：token 存在 localStorage，存在 XSS 窃取风险；缓解手段是部署时的 CSP 与不自注入 HTML
 // （本文件与 UI 都不写 innerHTML 用户内容）。详见 docs/CLOUD-SETUP.md 的安全说明。
+
+import { GoTrueClient } from '@supabase/auth-js';
 
 const NETWORK_ERROR = { code: 'network_error', message: '网络不可达，请检查连接后重试', retryable: true };
 
@@ -182,76 +181,165 @@ export function createAuthClient({
   emailRedirectTo = null
 } = {}) {
   const base = String(url || '').replace(/\/+$/, '');
-  let refreshInFlight = null;
+  const configured = Boolean(base && anonKey);
+  let authGeneration = 0;
+  let sdkSequence = 0;
+  const refreshesInFlight = new Map();
 
-  const endpoint = (path, query) => {
-    const u = new URL(`${base}${path}`);
-    if (query) for (const [k, v] of Object.entries(query)) if (v != null) u.searchParams.set(k, String(v));
-    return u.toString();
+  const noConfig = () => ({
+    ok: false,
+    status: 0,
+    error: { code: 'cloud_not_configured', message: '未配置云端，当前为游客模式', retryable: false }
+  });
+  const staleError = () => ({
+    code: 'stale_auth_operation',
+    message: '登录状态已经改变，请重试',
+    retryable: false
+  });
+  const readSession = () => {
+    try { return store?.readSession?.() || null; } catch { return null; }
   };
 
-  async function request(path, { method = 'POST', body, token, query, keepSession = true } = {}) {
-    if (!base || !anonKey) return { ok: false, status: 0, error: { code: 'cloud_not_configured', message: '未配置云端，当前为游客模式', retryable: false } };
+  /**
+   * 每个异步操作使用独立、仅在内存中的 auth-js 客户端。这样 GoTrue SDK 的状态更新
+   * 永远不会直接碰应用会话；只有通过下方代次与令牌检查的结果才能写入应用 store。
+   */
+  function createSdk() {
+    const refreshPath = new URL(`${base}/auth/v1/token`).pathname;
+    return new GoTrueClient({
+      url: `${base}/auth/v1`,
+      headers: { apikey: anonKey },
+      fetch: async (input, init) => {
+        const requestUrl = new URL(typeof input === 'string' || input instanceof URL ? String(input) : input.url);
+        const isRefresh = requestUrl.pathname === refreshPath &&
+          requestUrl.searchParams.get('grant_type') === 'refresh_token';
+        let response;
+        try {
+          response = await fetchImpl(input, init);
+        } catch (error) {
+          if (isRefresh) {
+            return new Response(JSON.stringify({
+              code: 'mofish_transient_0',
+              error_code: 'mofish_transient_0',
+              msg: 'Supabase Auth is temporarily unavailable'
+            }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+          }
+          throw error;
+        }
+        // auth-js retries refresh 5xx responses for up to one 30-second tick. Keep its
+        // error parsing, but stop the retry loop after the first infrastructure response.
+        if (isRefresh && response.status >= 500) {
+          return new Response(JSON.stringify({
+            code: `mofish_transient_${response.status}`,
+            error_code: `mofish_transient_${response.status}`,
+            msg: 'Supabase Auth is temporarily unavailable'
+          }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+        }
+        return response;
+      },
+      storageKey: `mofish-auth-operation-${++sdkSequence}`,
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false,
+      skipAutoInitialize: true
+    });
+  }
 
-    let response;
+  function sdkError(error) {
+    const code = error?.code || error?.name || 'unknown_error';
+    const boundedTransient = /^mofish_transient_(\d{1,3})$/.exec(String(code));
+    const status = boundedTransient ? Number(boundedTransient[1]) : Number(error?.status || 0);
+    const network = status === 0;
+    return { ...mapAuthError(status, { code, error_code: code, message: error?.message }, { network }), status };
+  }
+
+  function sdkStatus(error) {
+    const code = /^mofish_transient_(\d{1,3})$/.exec(String(error?.code || ''));
+    return code ? Number(code[1]) : Number(error?.status || 0);
+  }
+
+  async function withSdk(action) {
+    const sdk = createSdk();
     try {
-      response = await fetchImpl(endpoint(path, query), {
-        method,
-        headers: {
-          apikey: anonKey,
-          Authorization: `Bearer ${token || anonKey}`,
-          'Content-Type': 'application/json',
-          Accept: 'application/json'
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) })
+      return await action(sdk);
+    } catch (error) {
+      const wrapped = Object.assign(new Error(error?.message || 'Auth SDK request failed'), {
+        status: Number(error?.status || 0),
+        code: error?.code || 'network_error',
+        name: error?.name || 'AuthRetryableFetchError'
       });
-    } catch (err) {
-      return { ok: false, status: 0, error: mapAuthError(0, null, { network: true }) };
+      return { data: null, error: wrapped };
+    } finally {
+      try { await sdk.dispose(); } catch { /* 认证操作已结束；释放 SDK 定时器与监听器即可。 */ }
     }
+  }
 
-    if (response.status === 204) return { ok: true, status: 204, data: null };
+  function failure(result) {
+    const error = result?.error || {};
+    return {
+      ok: false,
+      status: sdkStatus(error),
+      error: sdkError(error)
+    };
+  }
 
-    let data = null;
-    try {
-      const text = await response.text();
-      data = text ? JSON.parse(text) : null;
-    } catch { data = null; }
+  function isCurrentContext(generation, originalSession) {
+    if (authGeneration !== generation) return false;
+    const current = readSession();
+    if (!originalSession) return !current;
+    return current?.access_token === originalSession.access_token &&
+      current?.refresh_token === originalSession.refresh_token &&
+      current?.user?.id === originalSession.user?.id;
+  }
 
-    if (response.ok) {
-      const session = keepSession ? normalizeSession(data, now()) : null;
-      return { ok: true, status: response.status, data, session };
-    }
-    return { ok: false, status: response.status, data, error: mapAuthError(response.status, data) };
+  function writeSession(session, generation, originalSession) {
+    if (!isCurrentContext(generation, originalSession)) return false;
+    store?.writeSession(session);
+    return true;
+  }
+
+  function startIdentityOperation() {
+    return ++authGeneration;
   }
 
   const client = {
-    configured: Boolean(base && anonKey),
+    configured,
 
     async signUp({ email, password }) {
       const local = validateCredentials({ email, password });
       if (local) return { ok: false, error: local };
-      const res = await request('/auth/v1/signup', {
-        body: { email: String(email).trim(), password },
-        query: emailRedirectTo ? { redirect_to: emailRedirectTo } : null
-      });
-      if (!res.ok) return res;
-      // 需要邮箱验证时 GoTrue 只返回 user 对象（没有 access_token）
-      const needsConfirmation = !res.session;
-      if (res.session) store?.writeSession(res.session);
-      return { ok: true, needsConfirmation, session: res.session, user: res.data?.user || res.data || null };
+      if (!configured) return noConfig();
+      const generation = startIdentityOperation();
+      const result = await withSdk(sdk => sdk.signUp({
+        email: String(email).trim(),
+        password,
+        options: emailRedirectTo ? { emailRedirectTo } : undefined
+      }));
+      if (result.error) return failure(result);
+      const session = normalizeSession(result.data?.session, now());
+      if (result.data?.session && !session) {
+        return { ok: false, error: { code: 'no_session', message: '注册没有返回有效会话，请稍后再试', retryable: true } };
+      }
+      if (session && !writeSession(session, generation, readSession())) return { ok: false, stale: true, error: staleError() };
+      return {
+        ok: true,
+        needsConfirmation: !session,
+        session,
+        user: result.data?.user || null
+      };
     },
 
     async signIn({ email, password }) {
       const local = validateCredentials({ email, password });
       if (local) return { ok: false, error: local };
-      const res = await request('/auth/v1/token', {
-        query: { grant_type: 'password' },
-        body: { email: String(email).trim(), password }
-      });
-      if (!res.ok) return res;
-      if (!res.session) return { ok: false, error: { code: 'no_session', message: '登录没有返回有效会话，请稍后再试', retryable: true } };
-      store?.writeSession(res.session);
-      return { ok: true, session: res.session };
+      if (!configured) return noConfig();
+      const generation = startIdentityOperation();
+      const result = await withSdk(sdk => sdk.signInWithPassword({ email: String(email).trim(), password }));
+      if (result.error) return failure(result);
+      const session = normalizeSession(result.data?.session, now());
+      if (!session) return { ok: false, error: { code: 'no_session', message: '登录没有返回有效会话，请稍后再试', retryable: true } };
+      if (!writeSession(session, generation, readSession())) return { ok: false, stale: true, error: staleError() };
+      return { ok: true, session };
     },
 
     /**
@@ -263,65 +351,87 @@ export function createAuthClient({
      *    否则用户一断网就会发现登录态被清掉、账号缓存被当成「别人的数据」。
      */
     async refresh(refreshToken) {
-      const token = refreshToken || store?.readSession()?.refresh_token;
+      const originalSession = readSession();
+      const generation = authGeneration;
+      const token = refreshToken || originalSession?.refresh_token;
       if (!token) return { ok: false, transient: false, error: { code: 'no_refresh_token', message: '登录状态已失效，请重新登录', retryable: false } };
-      if (refreshInFlight) return refreshInFlight;
-      refreshInFlight = (async () => {
-        const res = await request('/auth/v1/token', {
-          query: { grant_type: 'refresh_token' },
-          body: { refresh_token: token }
-        });
-        if (!res.ok || !res.session) {
-          if (isTransientAuthFailure(res)) {
+      if (!configured) return { ...noConfig(), transient: false };
+      if (originalSession && token !== originalSession.refresh_token) return { ok: false, stale: true, error: staleError() };
+      const flightKey = `${generation}:${token}`;
+      if (refreshesInFlight.has(flightKey)) return refreshesInFlight.get(flightKey);
+      const flight = (async () => {
+        const result = await withSdk(sdk => sdk.refreshSession({ refresh_token: token }));
+        if (result.error) {
+          if (!isCurrentContext(generation, originalSession)) return { ok: false, stale: true, error: staleError() };
+          const error = sdkError(result.error);
+          if (isTransientAuthFailure({ status: sdkStatus(result.error), error })) {
             return {
               ok: false,
               transient: true,
-              status: res.status,
-              error: res.error || { code: 'offline', message: '暂时无法连接云端，登录状态已保留', retryable: true }
+              status: sdkStatus(result.error),
+              error
             };
           }
-          store?.clearSession();
-          return { ok: false, transient: false, error: res.error || { code: 'refresh_failed', message: '登录状态已失效，请重新登录', retryable: false } };
+          if (originalSession) store?.clearSession();
+          return { ok: false, transient: false, error };
         }
-        store?.writeSession(res.session);
-        return { ok: true, session: res.session };
+        const session = normalizeSession(result.data?.session, now());
+        if (!session) {
+          if (!isCurrentContext(generation, originalSession)) return { ok: false, stale: true, error: staleError() };
+          return { ok: false, transient: false, error: { code: 'no_session', message: '刷新没有返回有效会话，请重新登录', retryable: false } };
+        }
+        if (!writeSession(session, generation, originalSession)) return { ok: false, stale: true, error: staleError() };
+        return { ok: true, session };
       })();
-      try { return await refreshInFlight; } finally { refreshInFlight = null; }
+      refreshesInFlight.set(flightKey, flight);
+      try { return await flight; }
+      finally { if (refreshesInFlight.get(flightKey) === flight) refreshesInFlight.delete(flightKey); }
     },
 
     async signOut() {
-      const session = store?.readSession();
+      const session = readSession();
+      startIdentityOperation();
+      // 先同步退出本机，再请求远端；在途刷新与回调已因代次变化而失效。
+      store?.clearSession();
       let remoteOk = true;
       if (session?.access_token) {
-        const res = await request('/auth/v1/logout', { method: 'POST', token: session.access_token });
-        remoteOk = res.ok;
+        if (!configured) remoteOk = false;
+        else {
+          const result = await withSdk(sdk => sdk.admin.signOut(session.access_token));
+          remoteOk = !result.error;
+        }
       }
-      store?.clearSession();
       return { ok: true, remoteOk };
     },
 
     async getUser(token) {
-      const access = token || store?.readSession()?.access_token;
+      const access = token || readSession()?.access_token;
       if (!access) return { ok: false, error: { code: 'no_session', message: '尚未登录', retryable: false } };
-      return request('/auth/v1/user', { method: 'GET', token: access, keepSession: false });
+      if (!configured) return noConfig();
+      const result = await withSdk(sdk => sdk.getUser(access));
+      if (result.error) return failure(result);
+      return { ok: true, status: 200, data: result.data?.user || null };
     },
 
     async requestPasswordReset(email) {
       const local = validateCredentials({ email }, { requirePassword: false });
       if (local) return { ok: false, error: local };
-      return request('/auth/v1/recover', {
-        body: { email: String(email).trim() },
-        query: emailRedirectTo ? { redirect_to: emailRedirectTo } : null
-      });
+      if (!configured) return noConfig();
+      const result = await withSdk(sdk => sdk.resetPasswordForEmail(String(email).trim(),
+        emailRedirectTo ? { redirectTo: emailRedirectTo } : undefined));
+      return result.error ? failure(result) : { ok: true, status: 200, data: result.data || null };
     },
 
     async resendConfirmation(email) {
       const local = validateCredentials({ email }, { requirePassword: false });
       if (local) return { ok: false, error: local };
-      return request('/auth/v1/resend', {
-        body: { type: 'signup', email: String(email).trim() },
-        query: emailRedirectTo ? { redirect_to: emailRedirectTo } : null
-      });
+      if (!configured) return noConfig();
+      const result = await withSdk(sdk => sdk.resend({
+        type: 'signup',
+        email: String(email).trim(),
+        options: emailRedirectTo ? { emailRedirectTo } : undefined
+      }));
+      return result.error ? failure(result) : { ok: true, status: 200, data: result.data || null };
     },
 
     /** 修改密码（重置流程最后一步，或登录后主动改密）。 */
@@ -332,10 +442,28 @@ export function createAuthClient({
       if (password.length > 72) {
         return { ok: false, error: { code: 'password_too_long', message: '密码太长（最多 72 位）', retryable: false } };
       }
-      const access = token || store?.readSession()?.access_token;
+      const originalSession = readSession();
+      const access = token || originalSession?.access_token;
       if (!access) return { ok: false, error: { code: 'no_session', message: '链接已失效，请重新申请重置邮件', retryable: false } };
-      const res = await request('/auth/v1/user', { method: 'PUT', token: access, body: { password }, keepSession: false });
-      if (!res.ok) return res;
+      if (!configured) return noConfig();
+      const generation = authGeneration;
+      if (originalSession && access !== originalSession.access_token) return { ok: false, stale: true, error: staleError() };
+      if (!originalSession?.refresh_token) return { ok: false, error: { code: 'no_session', message: '登录状态已失效，请重新申请重置邮件', retryable: false } };
+
+      const result = await withSdk(async sdk => {
+        const hydrated = await sdk.setSession({ access_token: access, refresh_token: originalSession.refresh_token });
+        if (hydrated.error) return hydrated;
+        const activeSession = normalizeSession(hydrated.data?.session, now());
+        if (!activeSession) return { data: null, error: new Error('No valid session') };
+        if (!isCurrentContext(generation, originalSession)) return { data: null, error: null, stale: true };
+        if (activeSession.refresh_token !== originalSession.refresh_token || activeSession.access_token !== originalSession.access_token) {
+          if (!writeSession(activeSession, generation, originalSession)) return { data: null, error: null, stale: true };
+        }
+        const updated = await sdk.updateUser({ password });
+        return { ...updated, session: activeSession };
+      });
+      if (result.stale || !isCurrentContext(generation, readSession())) return { ok: false, stale: true, error: staleError() };
+      if (result.error) return failure(result);
       return { ok: true };
     },
 
@@ -352,14 +480,15 @@ export function createAuthClient({
      *   'no_session'   —— 本机没有会话
      */
     async getSession({ allowRefresh = true } = {}) {
-      const session = store?.readSession();
+      const session = readSession();
       if (!session) return { ok: false, session: null, reason: 'no_session' };
       if (sessionIsFresh(session, now())) return { ok: true, session, reason: 'fresh' };
       if (!allowRefresh) return { ok: false, session, reason: 'expired' };
       const refreshed = await client.refresh(session.refresh_token);
       if (refreshed.ok) return { ok: true, session: refreshed.session, reason: 'refreshed' };
+      if (refreshed.stale) return { ok: false, session: readSession(), reason: 'stale', error: refreshed.error };
       if (refreshed.transient) {
-        const kept = store?.readSession() || session;
+        const kept = readSession() || session;
         return { ok: false, session: kept, reason: 'offline', error: refreshed.error };
       }
       return { ok: false, session: null, reason: 'invalid_grant', error: refreshed.error };
@@ -376,31 +505,25 @@ export function createAuthClient({
       if (!callback || callback.kind !== 'session' || !callback.accessToken) {
         return { ok: false, error: { code: 'bad_callback', message: '链接无效或已过期', retryable: false } };
       }
-      const probe = await request('/auth/v1/user', {
-        method: 'GET',
-        token: callback.accessToken,
-        keepSession: false
-      });
-      if (!probe.ok) {
+      if (!configured) return noConfig();
+      const generation = startIdentityOperation();
+      const probe = await withSdk(sdk => sdk.getUser(callback.accessToken));
+      if (probe.error) {
         return {
           ok: false,
-          error: probe.error || {
-            code: 'callback_verify_failed',
-            message: '链接已失效，请重新申请邮件',
-            retryable: probe.status === 0
-          }
+          error: sdkError(probe.error)
         };
       }
       const session = normalizeSession({
         access_token: callback.accessToken,
         refresh_token: callback.refreshToken,
         expires_in: callback.expiresIn,
-        user: probe.data
+        user: probe.data?.user
       }, now());
       if (!session) {
         return { ok: false, error: { code: 'bad_callback', message: '链接没有对应到有效账号，请重新申请邮件', retryable: false } };
       }
-      store?.writeSession(session);
+      if (!writeSession(session, generation, readSession())) return { ok: false, stale: true, error: staleError() };
       return { ok: true, session, type: callback.type };
     }
   };

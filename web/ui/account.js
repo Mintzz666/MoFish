@@ -308,9 +308,11 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
   }
 
   async function doSignOut() {
-    opToken += 1;                       // 让所有在途的登录/回调响应立即作废
+    const token = ++opToken;            // 让所有在途的登录/回调响应立即作废
     const res = await guard(() => auth.signOut());
+    if (isStale(token)) return;
     await engine.setSession(null);
+    if (isStale(token)) return;
     view = 'auto';
     store.clearAuthFlow?.();            // 重置链接状态跟着会话一起失效
     onSessionChange(null);

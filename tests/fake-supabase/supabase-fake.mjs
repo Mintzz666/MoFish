@@ -10,7 +10,9 @@ const b64url = (obj) => Buffer.from(JSON.stringify(obj)).toString('base64url');
 export function makeAccessToken(sub, { expSeconds = 3600, nowMs = Date.now(), role = 'authenticated' } = {}) {
   const header = b64url({ alg: 'none', typ: 'JWT' });
   const payload = b64url({ sub, role, exp: Math.floor(nowMs / 1000) + expSeconds });
-  return `${header}.${payload}.fakesignature`;
+  // 合法 Base64URL 结构，供官方 SDK 解析；这里只是假签名，不能用于真实认证。
+  const signature = Buffer.from('fake-signature').toString('base64url');
+  return `${header}.${payload}.${signature}`;
 }
 
 export function readTokenSub(token) {

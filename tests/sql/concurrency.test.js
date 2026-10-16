@@ -4,27 +4,35 @@
 // 无法构造「两个事务同时读到同一旧锚点」的交错，因此证明不了行锁是否生效。
 // 本文件启动/连接一个**真正的 Postgres 服务**，用两个独立连接并发调用同一个函数。
 //
-// 运行方式（任选其一）：
-//   1) 默认：若安装了 devDependency `embedded-postgres`，会自动起一个本地实例（随机端口，
-//      数据目录在系统临时目录，测试结束后关闭）。
-//   2) 指定现有实例：MOFISH_TEST_PG_URL=postgresql://postgres:postgres@127.0.0.1:5432/postgres
-//      （需要能创建角色、schema 与表的权限；测试会建 anon/authenticated 角色来模拟 Supabase）。
-//   3) 两者都没有：本文件的用例会以明确的跳过原因标 SKIP，不会被当成通过。
+// 运行方式与环境：
+//   1) 默认：若安装了 `embedded-postgres` 的本机二进制，会自动起一个隔离实例，
+//      使用唯一临时目录和系统分配的空闲端口，测试结束后只清理该实例。
+//   2) `MOFISH_TEST_PG_URL` 被明确拒绝：外部实例可能包含用户数据库或集群角色，
+//      测试无法证明其可销毁，因此不会连接它。
+//   3) 嵌入式 Postgres 缺失或无法启动时，本文件的四个真实并发用例会以具体原因标 SKIP。
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { rm, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { readMigrations, SUPABASE_EMULATION, USERS, validState } from './harness.mjs';
+import {
+  prepareFreshTestDatabase,
+  rejectExternalPostgresUrl,
+  startOwnedEmbeddedPostgres,
+  withEmbeddedPostgresOnly,
+} from './concurrency-safety.mjs';
 
-const PG_PORT = 54329;
 const USER_A = USERS.alice;
 
 let server = null;          // { url, stop }
 let admin = null;           // pg.Client
 let skipReason = false;
+
+// 拒绝应当是硬错误，而不是把危险配置伪装成一次跳过。
+// 此检查发生在导入 pg 或创建任何连接之前。
+rejectExternalPostgresUrl(process.env);
 
 /**
  * 在**测试定义之前**决定是否跳过：node:test 的 { skip } 选项在定义时求值，
@@ -33,8 +41,9 @@ let skipReason = false;
 try {
   server = await startPostgres();
 } catch (err) {
-  skipReason = `无法启动/连接真实 Postgres（${err.message}）。`
-    + ' 可设置 MOFISH_TEST_PG_URL 指向任意可用的 Postgres（需要建角色权限）后重跑。';
+  const cleanupDetail = err.cleanupError ? ` 清理状态：${err.cleanupError.message}` : '';
+  skipReason = `无法启动隔离的嵌入式真实 Postgres（${err.message}）。`
+    + `${cleanupDetail} 真实并发用例标为 SKIP；MOFISH_TEST_PG_URL 不受支持。`;
 }
 
 test.before(async () => {
@@ -43,52 +52,28 @@ test.before(async () => {
   admin = new Client({ connectionString: server.url });
   await admin.connect();
 
-  // 每个用例都从干净状态开始：删掉上一轮可能残留的对象
-  await admin.query('drop schema if exists public cascade; create schema public;');
-  await admin.query('drop schema if exists auth cascade;');
-  await admin.query(`do $$ begin
-      if exists (select 1 from pg_roles where rolname = 'authenticated') then drop owned by authenticated; end if;
-      if exists (select 1 from pg_roles where rolname = 'anon') then drop owned by anon; end if;
-      if exists (select 1 from pg_roles where rolname = 'service_role') then drop owned by service_role; end if;
-    end $$;`);
-  await admin.query(`drop role if exists authenticated; drop role if exists anon; drop role if exists service_role;`);
-
-  // 与 Supabase 一致的最小模拟 + 真实迁移
-  await admin.query(SUPABASE_EMULATION);
-  for (const migration of await readMigrations()) await admin.query(migration.sql);
-
-  // aquariums.owner_id 外键指向 auth.users，先建好测试账号
-  await admin.query('insert into auth.users (id, email) values ($1, $2), ($3, $4)',
-    [USERS.alice, 'alice@example.com', USERS.bob, 'bob@example.com']);
+  // 每次运行的 cluster 都是新建的；只创建测试对象，不重置 schema 或删除集群角色。
+  await prepareFreshTestDatabase(admin, {
+    supabaseEmulation: SUPABASE_EMULATION,
+    migrations: await readMigrations(),
+    users: USERS,
+  });
 });
 
 async function startPostgres() {
-  if (process.env.MOFISH_TEST_PG_URL) {
-    return { url: process.env.MOFISH_TEST_PG_URL, stop: async () => {} };
-  }
-  await assertEmbeddedBinaryAvailable();
-  const { default: EmbeddedPostgres } = await import('embedded-postgres');
-  const dir = path.join(os.tmpdir(), 'mofish-pg-concurrency');
-  await rm(dir, { recursive: true, force: true });
-  const instance = new EmbeddedPostgres({
-    databaseDir: dir,
-    user: 'postgres',
-    password: 'postgres',
-    port: PG_PORT,
-    persistent: false
+  return withEmbeddedPostgresOnly({
+    env: process.env,
+    launch: async () => {
+      await assertEmbeddedBinaryAvailable();
+      const { default: EmbeddedPostgres } = await import('embedded-postgres');
+      return startOwnedEmbeddedPostgres({ EmbeddedPostgres });
+    },
   });
-  await instance.initialise();
-  await instance.start();
-  return {
-    url: `postgresql://postgres:postgres@127.0.0.1:${PG_PORT}/postgres`,
-    stop: async () => { await instance.stop(); }
-  };
 }
 
 /**
- * embedded-postgres 会在模块加载后**异步**去 import 平台二进制包（@embedded-postgres/<platform>-<arch>）。
- * 那个 import 的失败是未处理的 rejection，会直接把整个测试进程打挂 —— try/catch 兜不住。
- * 所以在引入它之前先做一次文件系统预检：二进制包不在就干脆跳过，而不是崩掉 npm test。
+ * 先确认对应平台包已安装，再导入 embedded-postgres。缺少本机动态库等启动错误
+ * 会由 startPostgres 的 try/catch 捕获，并显示具体 SKIP 原因；不会被说成真实并发通过。
  */
 async function assertEmbeddedBinaryAvailable() {
   const platform = process.platform === 'win32' ? 'windows' : process.platform;
@@ -102,15 +87,14 @@ async function assertEmbeddedBinaryAvailable() {
       return;
     } catch { /* 试下一个命名 */ }
   }
-  throw new Error(
-    `未安装本机对应的平台包（试过 ${candidates.join('、')}）。`
-    + ' 可用 npm install -D embedded-postgres 安装，或设置 MOFISH_TEST_PG_URL 指向现有 Postgres'
-  );
+  throw new Error(`未安装本机对应的平台包（试过 ${candidates.join('、')}）。`);
 }
 
 test.after(async () => {
-  try { await admin?.end(); } catch { /* 忽略 */ }
-  try { await server?.stop(); } catch { /* 忽略 */ }
+  let cleanupError = null;
+  try { await admin?.end(); } catch (error) { cleanupError = error; }
+  try { await server?.stop(); } catch (error) { cleanupError ??= error; }
+  if (cleanupError) throw cleanupError;
 });
 
 /** 打开一条以某个用户身份执行的真实连接（与 PostgREST 的做法一致：先写 claims，再切角色）。 */

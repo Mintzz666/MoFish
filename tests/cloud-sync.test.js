@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { createSyncEngine, STATUS, CONFLICT_REASON } from '../web/cloud/sync.js';
 import { createCloudStack } from '../web/cloud/client.js';
 import { createLocalStore, keys } from '../web/storage.js';
-import { initial, validate, canonicalState } from '../web/model.js';
+import { initial, validate, canonicalState, cloneState } from '../web/model.js';
 import { createMemoryStorage } from './helpers/memory-storage.mjs';
 import { createFakeSupabase, makeAccessToken } from './fake-supabase/supabase-fake.mjs';
 import { createFakeFetch } from './fake-supabase/server.mjs';
@@ -661,7 +661,7 @@ test('__proto__ 之类的恶意键名不会污染原型链（存档按字面键�
 // ------------------------------------------------------------------ 第二轮评审的回归测试
 
 /** 模拟「重新打开页面」：同一份本机存储 + 新的内存状态 + 新的引擎。 */
-function reopened({ stack, store, onStatus = () => {} }) {
+function reopened({ stack, store, onStatus = () => {}, isOnline = () => true }) {
   const holder = { current: tank('陌生的小满') };
   const engine = createSyncEngine({
     api: stack.api,
@@ -669,9 +669,100 @@ function reopened({ stack, store, onStatus = () => {} }) {
     getState: () => holder.current,
     setState: (next) => { holder.current = next; },
     initialState: () => tank('新缸'),
-    onStatus
+    onStatus,
+    isOnline
   });
   return { engine, holder };
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function directEngine(api, current = tank('陌生的小满')) {
+  const store = createLocalStore(createMemoryStorage());
+  const holder = { current };
+  const timers = new Map();
+  let timerId = 0;
+  const engine = createSyncEngine({
+    api,
+    store,
+    getState: () => holder.current,
+    setState: (next) => { holder.current = next; },
+    initialState: () => tank('新缸'),
+    debounceMs: DEBOUNCE,
+    setTimeoutFn: (fn, ms) => { const id = ++timerId; timers.set(id, { fn, ms }); return id; },
+    clearTimeoutFn: (id) => { timers.delete(id); },
+    isOnline: () => true
+  });
+  return { engine, store, holder, timers };
+}
+
+function directApiHarness(accountNames = ['alice', 'bob']) {
+  let targetAccount = accountNames[0];
+  const rows = new Map(accountNames.map((account) => {
+    const state = tank(`${account} 云端鱼缸`);
+    return [account, {
+      aquariumId: `aquarium-${account}`,
+      revision: 1,
+      state,
+      lastGrowthAt: new Date(START).toISOString()
+    }];
+  }));
+  const saves = [];
+  const settles = [];
+  const saveGates = new Map();
+  const settleGates = new Map();
+  const toResult = (row) => ({
+    aquariumId: row.aquariumId,
+    revision: row.revision,
+    state: cloneState(row.state),
+    lastGrowthAt: row.lastGrowthAt,
+    created: false
+  });
+  const api = {
+    configured: true,
+    async ensureAquarium() {
+      return { ok: true, result: toResult(rows.get(targetAccount)) };
+    },
+    async saveAquarium(input) {
+      saves.push({ ...input, state: cloneState(input.state) });
+      const row = [...rows.values()].find((candidate) => candidate.aquariumId === input.aquariumId);
+      const gate = saveGates.get(input.aquariumId);
+      if (gate) {
+        gate.started.resolve();
+        const override = await gate.response.promise;
+        if (override) return override;
+      }
+      if (!row || Number(input.expectedRevision) !== row.revision) {
+        return { ok: false, result: { kind: 'conflict', revision: row?.revision ?? null } };
+      }
+      row.state = cloneState(input.state);
+      row.revision += 1;
+      return { ok: true, result: { revision: row.revision, state: cloneState(row.state) } };
+    },
+    async settleGrowth(aquariumId) {
+      settles.push(aquariumId);
+      const row = [...rows.values()].find((candidate) => candidate.aquariumId === aquariumId);
+      const gate = settleGates.get(aquariumId);
+      if (gate) {
+        gate.started.resolve();
+        const override = await gate.response.promise;
+        if (override?.ok && override.result) {
+          if (override.result.state) row.state = cloneState(override.result.state);
+          if (override.result.revision != null) row.revision = override.result.revision;
+        }
+        return override;
+      }
+      return { ok: true, result: { ...toResult(row), creditedSeconds: 0 } };
+    }
+  };
+  return {
+    api, rows, saves, settles, saveGates, settleGates,
+    setTargetAccount: (account) => { targetAccount = account; }
+  };
 }
 
 test('[P1-1] 重连（syncNow）不会绕过冲突去覆盖另一台设备已经提交的改动', async () => {
@@ -843,6 +934,283 @@ test('[P1-3] 退出登录后到达的响应不会把登录状态写回界面', a
   assert.equal(result.skipped, 'stale');
   assert.equal(h.engine.mode, 'guest', '退出后仍然是游客模式');
   assert.equal(h.engine.status, STATUS.GUEST, '过期响应不得把状态改成已同步');
+});
+
+test('[P1-4] 写入期间的新编辑保留 pending，并在首个快照成功后继续上传', async () => {
+  let release;
+  let started;
+  const blocker = new Promise((resolve) => { release = resolve; });
+  const requestStarted = new Promise((resolve) => { started = resolve; });
+  let holdNextSave = false;
+  const h = createHarness({
+    gate: async (ctx) => {
+      if (holdNextSave && ctx.path.endsWith('save_aquarium')) {
+        holdNextSave = false;
+        started();
+        await blocker;
+      }
+    }
+  });
+  const session = await h.register();
+  await h.engine.setSession(session.session);
+  const uid = session.session.user.id;
+  const aquariumId = h.engine.snapshot.aquariumId;
+  holdNextSave = true;
+
+  h.current.fish[0].name = '第一次改名';
+  const firstSave = h.engine.flush({ reason: 'test' });
+  await requestStarted;
+
+  h.current.fish[0].name = '第二次改名';
+  assert.equal(h.engine.persistLocal(), true);
+  assert.equal(h.engine.markDirty(), true);
+  const duringRequest = h.store.readPending(uid, aquariumId);
+  assert.equal(duringRequest.state.fish[0].name, '第二次改名');
+
+  release();
+  const firstResult = await firstSave;
+  assert.equal(firstResult.ok, true);
+  assert.equal(h.engine.isDirty, true, '首个响应只确认已发送快照，不能把第二次编辑算成已同步');
+  assert.equal(h.store.readPending(uid, aquariumId)?.state.fish[0].name, '第二次改名',
+    '首个写入响应不能清掉请求期间的 pending');
+
+  await h.runTimers();
+  assert.equal(h.countRequests('save_aquarium'), 2, '请求期间的第二次编辑应触发后续写入');
+  assert.equal([...h.fake.aquariums.values()][0].state.fish[0].name, '第二次改名');
+  assert.equal(h.store.readPending(uid, aquariumId), null, '后续写入成功后才清除 pending');
+});
+
+test('[P1-9] 保存请求失败时保留请求期间的最新编辑，而不是旧请求快照', async () => {
+  const h = directApiHarness(['alice']);
+  const { engine, holder, store } = directEngine(h.api);
+  const session = { user: { id: 'alice', email: 'alice@example.com' } };
+  h.setTargetAccount('alice');
+  await engine.setSession(session);
+  const aquariumId = engine.snapshot.aquariumId;
+  const gate = { started: deferred(), response: deferred() };
+  h.saveGates.set(aquariumId, gate);
+
+  holder.current.fish[0].name = '请求里的第一次改名';
+  const saving = engine.flush({ reason: 'failure-test' });
+  await gate.started.promise;
+  holder.current.fish[0].name = '请求期间的第二次改名';
+  assert.equal(engine.persistLocal(), true);
+  assert.equal(engine.markDirty(), true);
+
+  gate.response.resolve({ ok: false, result: { kind: 'offline', retryable: true, message: 'offline' } });
+  const result = await saving;
+  assert.equal(result.ok, false);
+  assert.equal(engine.status, STATUS.OFFLINE);
+  assert.equal(h.saves[0].state.fish[0].name, '请求里的第一次改名', '发出的请求内容保持为不可变快照');
+  assert.equal(holder.current.fish[0].name, '请求期间的第二次改名');
+  assert.equal(store.readAccountState('alice', aquariumId).fish[0].name, '请求期间的第二次改名');
+  assert.equal(store.readPending('alice', aquariumId)?.state.fish[0].name, '请求期间的第二次改名',
+    '失败分支必须保留请求期间的最新状态');
+});
+
+test('[P1-5] 成长结算期间本地编辑不被旧结算快照覆盖或清除', async () => {
+  let release;
+  let started;
+  const blocker = new Promise((resolve) => { release = resolve; });
+  const requestStarted = new Promise((resolve) => { started = resolve; });
+  let holdNextSettle = false;
+  const h = createHarness({
+    gate: async (ctx) => {
+      if (holdNextSettle && ctx.path.endsWith('settle_growth')) {
+        holdNextSettle = false;
+        started();
+        await blocker;
+      }
+    }
+  });
+  const session = await h.register();
+  await h.engine.setSession(session.session);
+  const uid = session.session.user.id;
+  const aquariumId = h.engine.snapshot.aquariumId;
+  const baseRevision = h.engine.snapshot.baseRevision;
+  const beforeGrowth = h.current.fish[0].growth;
+  h.advance(60 * 60_000);
+  const settlesBefore = h.countRequests('settle_growth');
+  const savesBefore = h.countRequests('save_aquarium');
+  holdNextSettle = true;
+
+  const settling = h.engine.syncNow({ reason: 'test' });
+  await requestStarted;
+  h.current.fish[0].name = '结算期间改名';
+  assert.equal(h.engine.persistLocal(), true);
+  assert.equal(h.engine.markDirty(), true);
+  release();
+
+  const result = await settling;
+  assert.equal(result.ok, false, '并发本地编辑应停在明确冲突状态');
+  assert.equal(h.lastStatus, STATUS.CONFLICT);
+  assert.equal(h.current.fish[0].name, '结算期间改名', '结算返回的旧快照不能覆盖用户编辑');
+  assert.equal(h.engine.snapshot.baseRevision, baseRevision, '不能盲目抬高本地写入基线');
+  assert.equal(h.engine.conflictDetail().cloudKnown, true);
+  assert.equal(h.engine.conflictDetail().localFish[0].name, '结算期间改名');
+  assert.equal(h.store.readPending(uid, aquariumId)?.state.fish[0].name, '结算期间改名',
+    '待同步副本必须在冲突后保留');
+  const server = [...h.fake.aquariums.values()][0];
+  assert.ok(Math.abs(server.state.fish[0].growth - (beforeGrowth + 0.008)) < 1e-9,
+    '服务端成长只由这次结算记一次');
+  assert.equal(h.countRequests('settle_growth') - settlesBefore, 1);
+  assert.equal(h.countRequests('save_aquarium') - savesBefore, 0, '未选择如何处理前不能上传旧的本地基线');
+});
+
+test('[P1-6] 全新引擎离线冷启动恢复账号鱼缸指针，后续改动仍能落盘并恢复', async () => {
+  const h = createHarness();
+  const session = await h.register();
+  await h.engine.setSession(session.session);
+  const uid = session.session.user.id;
+  const aquariumId = h.engine.snapshot.aquariumId;
+  const revision = h.engine.snapshot.baseRevision;
+
+  let online = false;
+  h.setOnline(false);
+  const store2 = createLocalStore(h.raw);
+  const { engine: engine2, holder: holder2 } = reopened({
+    stack: h.stack,
+    store: store2,
+    isOnline: () => online
+  });
+  const offlineResult = await engine2.setSession(session.session);
+  assert.equal(offlineResult.offline, true);
+  assert.equal(engine2.snapshot.aquariumId, aquariumId, '离线冷启动必须恢复当前账号的鱼缸 id');
+  assert.equal(engine2.snapshot.baseRevision, revision, '保留本地指针记下的已知 revision');
+  assert.equal(holder2.current.fish[0].name, h.current.fish[0].name);
+
+  holder2.current.plants = 8;
+  assert.equal(engine2.persistLocal(), true, '恢复指针后编辑才能写入账号缓存');
+  assert.equal(store2.readPending(uid, aquariumId)?.state.plants, 8,
+    '未知云端基线仍按 pending 保留，不能伪装成已同步');
+
+  const store3 = createLocalStore(h.raw);
+  const { engine: engine3, holder: holder3 } = reopened({
+    stack: h.stack,
+    store: store3,
+    isOnline: () => online
+  });
+  await engine3.setSession(session.session);
+  assert.equal(holder3.current.plants, 8, '真正重启后的全新引擎恢复离线编辑');
+  assert.equal(engine3.snapshot.aquariumId, aquariumId);
+
+  online = true;
+  h.setOnline(true);
+  const syncResult = await engine3.syncNow({ reason: 'reconnect' });
+  assert.equal(syncResult.ok, true);
+  assert.equal([...h.fake.aquariums.values()][0].state.plants, 8);
+  assert.equal(store3.readPending(uid, aquariumId), null);
+});
+
+test('[P1-10] 离线恢复的未知 revision 在 flush 时先对账，不发送 save(null)', async () => {
+  const h = createHarness();
+  const session = await h.register();
+  await h.engine.setSession(session.session);
+  const uid = session.session.user.id;
+  const aquariumId = h.engine.snapshot.aquariumId;
+  const local = cloneState(h.current);
+  local.plants = 7;
+  h.store.writeAccountState(uid, aquariumId, local);
+  h.store.writePending(uid, aquariumId, local, null);
+
+  h.setOnline(false);
+  const store2 = createLocalStore(h.raw);
+  const { engine } = reopened({
+    stack: h.stack,
+    store: store2,
+    isOnline: () => false
+  });
+  const restored = await engine.setSession(session.session);
+  assert.equal(restored.offline, true);
+  assert.equal(engine.snapshot.aquariumId, aquariumId);
+  assert.equal(engine.snapshot.baseRevision, null, '未知基线必须保持未知');
+  assert.equal(engine.isDirty, true);
+
+  const ensuresBefore = h.countRequests('ensure_aquarium');
+  const savesBefore = h.countRequests('save_aquarium');
+  const result = await engine.flush({ reason: 'unknown-baseline-test' });
+
+  assert.equal(result.offline, true, '未知基线时 flush 应重新对账');
+  assert.equal(h.countRequests('ensure_aquarium'), ensuresBefore + 1,
+    '必须调用 hydrate/ensureAquarium 对账');
+  assert.equal(h.countRequests('save_aquarium'), savesBefore,
+    '不能把 null 当作 revision 0 发起存档写入');
+  assert.equal(store2.readPending(uid, aquariumId)?.state.plants, 7,
+    '离线对账后本机待同步内容仍应保留');
+});
+
+test('[P1-7] 切号后旧结算响应不能解开新账号的结算锁', async () => {
+  const h = directApiHarness();
+  const { engine, holder } = directEngine(h.api);
+  const sessionA = { user: { id: 'alice', email: 'alice@example.com' } };
+  const sessionB = { user: { id: 'bob', email: 'bob@example.com' } };
+  h.setTargetAccount('alice');
+  await engine.setSession(sessionA);
+
+  const gateA = { started: deferred(), response: deferred() };
+  const gateB = { started: deferred(), response: deferred() };
+  h.settleGates.set('aquarium-alice', gateA);
+  h.settleGates.set('aquarium-bob', gateB);
+  const oldSettlement = engine.syncNow({ reason: 'account-switch-test' });
+  await gateA.started.promise;
+
+  h.setTargetAccount('bob');
+  const newHydration = engine.setSession(sessionB);
+  await gateB.started.promise;
+  holder.current.fish[0].name = 'B 结算期间改名';
+  engine.persistLocal();
+  engine.markDirty();
+
+  gateA.response.resolve({ ok: true, result: { state: cloneState(h.rows.get('alice').state), revision: 2 } });
+  assert.equal((await oldSettlement).skipped, 'stale');
+  const savesBefore = h.saves.length;
+  const blockedSave = await engine.flush({ reason: 'settle-lock-test' });
+  assert.equal(blockedSave.skipped, 'settling', 'A 的 finally 不能清掉 B 的结算锁');
+  assert.equal(h.saves.length, savesBefore, 'B 结算完成前不能并发保存');
+
+  gateB.response.resolve({ ok: true, result: { state: h.rows.get('bob').state, revision: 2 } });
+  const hydrationResult = await newHydration;
+  assert.equal(hydrationResult.conflict.reason, CONFLICT_REASON.PENDING);
+  assert.equal(holder.current.fish[0].name, 'B 结算期间改名');
+  assert.equal(engine.status, STATUS.CONFLICT);
+});
+
+test('[P1-8] 旧账号保存结束时不能清掉新账号的在途保存指针', async () => {
+  const h = directApiHarness();
+  const { engine, holder } = directEngine(h.api);
+  const sessionA = { user: { id: 'alice', email: 'alice@example.com' } };
+  const sessionB = { user: { id: 'bob', email: 'bob@example.com' } };
+  h.setTargetAccount('alice');
+  await engine.setSession(sessionA);
+
+  const gateA = { started: deferred(), response: deferred() };
+  const gateB = { started: deferred(), response: deferred() };
+  h.saveGates.set('aquarium-alice', gateA);
+  h.saveGates.set('aquarium-bob', gateB);
+  holder.current.fish[0].name = 'A 的在途改名';
+  const oldSave = engine.flush({ reason: 'account-switch-test' });
+  await gateA.started.promise;
+
+  h.setTargetAccount('bob');
+  await engine.setSession(sessionB);
+  holder.current.plants = 6;
+  const newSave = engine.flush({ reason: 'account-switch-test' });
+  await gateB.started.promise;
+
+  gateA.response.resolve(null);
+  assert.equal((await oldSave).skipped, 'stale');
+  const requestsBeforeCoalescedFlush = h.saves.length;
+  const coalescedSave = engine.flush({ reason: 'coalesce-test' });
+  assert.equal(h.saves.length, requestsBeforeCoalescedFlush,
+    'B 的第二次 flush 应复用当前请求，不能因为 A 的 finally 清锁而重复发出');
+
+  gateB.response.resolve(null);
+  const [newResult, coalescedResult] = await Promise.all([newSave, coalescedSave]);
+  assert.equal(newResult.ok, true);
+  assert.equal(coalescedResult.ok, true);
+  assert.equal(h.saves.length, 2);
+  const rowB = h.rows.get('bob');
+  assert.equal(rowB.state.plants, 6);
 });
 
 test('[P1-1] 同步顺序固定为「先上传本机改动 → 再结算服务端成长」', async () => {

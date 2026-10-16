@@ -8,10 +8,12 @@
 //    真实 Supabase 联调见 docs/HANDOFF.md 的「阻塞项」。
 //
 // 用法：node tests/e2e/cloud-e2e.mjs            （需要本机 Chrome）
-//      node tests/e2e/cloud-e2e.mjs --keep     （保留截图与打开的浏览器）
+//      node tests/e2e/cloud-e2e.mjs --keep     （保留本轮截图与结果，浏览器始终关闭）
+//      MOFISH_CHROME_PATH=/path/to/chrome npm run test:e2e
 
 import { spawn, execFileSync } from 'node:child_process';
-import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileSync, mkdirSync, rmSync, mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFakeSupabase, makeAccessToken } from '../fake-supabase/supabase-fake.mjs';
@@ -20,9 +22,17 @@ import { startPreviewServer } from '../../scripts/serve.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '../..');
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const SHOTS = '/tmp/mofish-e2e';
+const CHROME = process.env.MOFISH_CHROME_PATH || [
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome',
+  process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, 'Google/Chrome/Application/chrome.exe')
+].filter(Boolean).find(p => existsSync(p));
+if (!CHROME || !existsSync(CHROME)) throw new Error('未找到 Chrome/Chromium，请通过 MOFISH_CHROME_PATH 指定浏览器。');
+const RUN_DIR = mkdtempSync(path.join(os.tmpdir(), 'mofish-e2e-'));
+const PROFILE = path.join(RUN_DIR, 'browser-profile');
+const SHOTS = path.join(RUN_DIR, 'screenshots');
 mkdirSync(SHOTS, { recursive: true });
+const sockets = [];
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const results = [];
@@ -35,18 +45,29 @@ function check(name, ok, detail = '') {
 let msgId = 0;
 async function connect(wsUrl, { pageDomains = true } = {}) {
   const ws = new WebSocket(wsUrl);
+  sockets.push(ws);
   const pending = new Map();
   const events = [];
   const send = (method, params = {}) => new Promise((resolve, reject) => {
     const id = ++msgId;
-    pending.set(id, { resolve, reject });
+    const timeout = setTimeout(() => { pending.delete(id); reject(new Error(`CDP 超时：${method}`)); }, 15000);
+    pending.set(id, { resolve, reject, timeout });
     ws.send(JSON.stringify({ id, method, params }));
   });
-  await new Promise(r => ws.addEventListener('open', r));
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('CDP 连接超时')), 10000);
+    ws.addEventListener('open', () => { clearTimeout(timeout); resolve(); }, { once: true });
+    ws.addEventListener('error', () => { clearTimeout(timeout); reject(new Error('CDP 连接失败')); }, { once: true });
+  });
+  ws.addEventListener('close', () => {
+    for (const p of pending.values()) { clearTimeout(p.timeout); p.reject(new Error('CDP 连接已关闭')); }
+    pending.clear();
+  });
   ws.addEventListener('message', ev => {
     const m = JSON.parse(ev.data);
     if (m.id && pending.has(m.id)) {
       const p = pending.get(m.id); pending.delete(m.id);
+      clearTimeout(p.timeout);
       m.error ? p.reject(new Error(m.method + ' ' + JSON.stringify(m.error))) : p.resolve(m.result);
     } else if (m.method) events.push(m);
   });
@@ -94,8 +115,11 @@ async function connect(wsUrl, { pageDomains = true } = {}) {
     errors() {
       return events
         .filter(e => (e.method === 'Log.entryAdded' && e.params.entry.level === 'error')
-          || (e.method === 'Runtime.consoleAPICalled' && e.params.type === 'error'))
-        .map(e => e.method === 'Log.entryAdded' ? e.params.entry.text : (e.params.args || []).map(a => a.value || a.description).join(' '));
+          || (e.method === 'Runtime.consoleAPICalled' && e.params.type === 'error')
+          || e.method === 'Runtime.exceptionThrown')
+        .map(e => e.method === 'Log.entryAdded' ? e.params.entry.text
+          : e.method === 'Runtime.exceptionThrown' ? (e.params.exceptionDetails.exception?.description || e.params.exceptionDetails.text)
+          : (e.params.args || []).map(a => a.value || a.description).join(' '));
     }
   };
   return page;
@@ -112,7 +136,7 @@ async function newContextPage(browserWs, label) {
   return page;
 }
 
-const DEBUG_PORT = 9334;
+let DEBUG_PORT;
 let chrome, fake, fakeServer, preview, browserWs;
 
 // ---------------------------------------------------------------- 主流程
@@ -130,18 +154,25 @@ async function main() {
   preview = await startPreviewServer({ dir: 'dist', port: 0, allowConnect: [fakeServer.url] });
   console.log(`预览 ${preview.url} · 假后端 ${fakeServer.url} · _headers 规则 ${preview.rules.length} 条`);
 
-  // 2) Chrome（清理上次残留的 profile，避免单例锁导致新实例不监听端口）
-  rmSync('/tmp/mofish-e2e-chrome', { recursive: true, force: true });
+  // 2) 每轮独立 profile 与由浏览器分配的端口，避免两轮测试互相删除文件或连接到旧进程。
   chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--hide-scrollbars',
+    ...(process.env.MOFISH_CHROME_NO_SANDBOX === '1' ? ['--no-sandbox'] : []),
     // 自动化下必须关掉后台节流，否则隐藏页面的 setTimeout（去抖写入）会被推迟到 3 秒以上，
     // 让「等待去抖窗口」的断言变成随机失败。
     '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding',
-    `--remote-debugging-port=${DEBUG_PORT}`, '--user-data-dir=/tmp/mofish-e2e-chrome', 'about:blank'],
+    '--remote-debugging-port=0', `--user-data-dir=${PROFILE}`, 'about:blank'],
     { stdio: 'ignore', detached: false });
+  let spawnError;
+  chrome.once('error', error => { spawnError = error; });
+  console.log(`本轮临时目录 ${RUN_DIR} · 测试 PID ${process.pid} · Chrome PID ${chrome.pid ?? '启动失败'}`);
   let version = null;
   for (let i = 0; i < 40 && !version; i++) {
+    if (spawnError) throw spawnError;
     await sleep(400);
-    try { version = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/version`)).json(); } catch { /* 还没起来 */ }
+    try {
+      DEBUG_PORT = Number(readFileSync(path.join(PROFILE, 'DevToolsActivePort'), 'utf8').split('\n')[0]);
+      version = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/version`)).json();
+    } catch { /* 还没起来 */ }
   }
   if (!version) throw new Error(`Chrome 未在 ${DEBUG_PORT} 上启动（headless 调试端口不可达）`);
 
@@ -436,9 +467,41 @@ async function main() {
     console.log('失败项：');
     for (const f of failed) console.log(` - ${f.name}${f.detail ? ` (${f.detail})` : ''}`);
   }
-  console.log(`截图目录：${SHOTS}`);
-  writeFileSync('/tmp/mofish-e2e-result.json', JSON.stringify(results, null, 2));
+  writeFileSync(path.join(RUN_DIR, 'result.json'), JSON.stringify(results, null, 2));
   return failed.length;
+}
+
+let cleanupPromise;
+function cleanup() {
+  if (cleanupPromise) return cleanupPromise;
+  cleanupPromise = (async () => {
+  try { await browserWs?.send('Browser.close'); } catch {}
+  for (const ws of sockets) { try { ws.close(); } catch {} }
+  if (chrome?.pid && chrome.exitCode === null && chrome.signalCode === null) {
+    chrome.kill('SIGTERM');
+    await Promise.race([new Promise(resolve => chrome.once('exit', resolve)), sleep(2000)]);
+    if (chrome.exitCode === null && chrome.signalCode === null) {
+      chrome.kill('SIGKILL');
+      await Promise.race([new Promise(resolve => chrome.once('exit', resolve)), sleep(2000)]);
+    }
+  }
+  try { await preview?.close(); } catch {}
+  try { await fakeServer?.close(); } catch {}
+  rmSync(PROFILE, { recursive: true, force: true });
+  if (process.argv.includes('--keep') || process.exitCode) {
+    console.log(`保留本轮测试证据：${RUN_DIR}（浏览器已关闭，profile 已清理）`);
+  } else {
+    rmSync(RUN_DIR, { recursive: true, force: true });
+    console.log('已关闭本轮浏览器与服务，清理临时目录。');
+  }
+  })();
+  return cleanupPromise;
+}
+for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+  process.once(signal, () => {
+    process.exitCode = code;
+    void cleanup().finally(() => process.exit(code));
+  });
 }
 
 try {
@@ -448,7 +511,5 @@ try {
   console.error('端到端执行失败：', err);
   process.exitCode = 1;
 } finally {
-  try { await preview?.close(); } catch {}
-  try { await fakeServer?.close(); } catch {}
-  try { chrome?.kill(); } catch {}
+  await cleanup();
 }

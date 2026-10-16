@@ -13,19 +13,18 @@ function route(fake, url, method, headers, body) {
 }
 
 function toResponse({ status, body }) {
-  return {
-    ok: status >= 200 && status < 300,
+  return new Response(body == null ? null : JSON.stringify(body), {
     status,
-    async text() { return body == null ? '' : JSON.stringify(body); }
-  };
+    headers: { 'Content-Type': 'application/json' }
+  });
 }
 
 export function createFakeFetch(fake, { onRequest } = {}) {
   return async function fetchImpl(input, init = {}) {
-    const url = new URL(String(input));
+    const url = new URL(typeof input === 'string' || input instanceof URL ? String(input) : input.url);
     const method = String(init.method || 'GET').toUpperCase();
     const headers = {};
-    for (const [k, v] of Object.entries(init.headers || {})) headers[k.toLowerCase()] = v;
+    for (const [k, v] of new Headers(init.headers || input?.headers || {})) headers[k.toLowerCase()] = v;
     let body = null;
     if (init.body) { try { body = JSON.parse(init.body); } catch { body = null; } }
 
@@ -57,7 +56,7 @@ export async function startFakeServer(fake, { port = 0, host = '127.0.0.1' } = {
 
       // 与 Supabase 一致地放开 CORS（真正的边界是 RLS，不是 CORS）。
       res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Headers', 'authorization, apikey, content-type, accept');
+      res.setHeader('Access-Control-Allow-Headers', 'authorization, apikey, content-type, accept, x-client-info, x-supabase-api-version');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
 
       if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }

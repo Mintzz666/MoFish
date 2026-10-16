@@ -95,6 +95,8 @@ export function createSyncEngine({
   let timer = null;
   let inFlight = null;
   let queued = false;
+  let settling = false;
+  let settleToken = 0;
   let disposed = false;
 
   const configured = Boolean(api?.configured);
@@ -161,12 +163,9 @@ export function createSyncEngine({
     const rev = revision == null ? null : Number(revision);
     if (Number.isFinite(rev)) baseRevision = rev;
     baseCanonical = canonicalState(state);
-    const uid = userId();
-    if (uid && aquariumId) {
-      store.writeAccountState(uid, aquariumId, state);
-      store.writeCurrent(uid, { aquariumId, revision: baseRevision, lastGrowthAt });
-      store.clearPending(uid, aquariumId);
-    }
+    // The acknowledged snapshot is the new baseline. Persist the current live
+    // state against it so edits made while the request was in flight stay pending.
+    persistLocal();
   }
 
   /** 用一份权威状态替换内存状态：服务端返回的数据仍然要过一遍本地校验，坏数据不进渲染层。 */
@@ -198,6 +197,7 @@ export function createSyncEngine({
     const gen = generation;
     clearSaveTimer();
     inFlight = null; queued = false; conflict = null;
+    settleToken += 1; settling = false;
     session = nextSession && nextSession.user && nextSession.user.id ? nextSession : null;
 
     if (!session) {
@@ -208,6 +208,9 @@ export function createSyncEngine({
     }
 
     mode = 'cloud';
+    // Do not let a previous account's aquarium pointer survive while this
+    // account is being hydrated, including when the request fails offline.
+    aquariumId = null; baseRevision = null; baseCanonical = null; lastGrowthAt = null;
     return hydrate({ gen });
   }
 
@@ -247,9 +250,21 @@ export function createSyncEngine({
       // 离线/服务端故障：用本机可用副本继续游玩，并把「有未同步内容」如实反映出来。
       const fallback = validate(pendingState || cachedState || guestState || getState());
       setState(fallback);
-      baseRevision = null;
+      aquariumId = pointer?.aquariumId || null;
+      // Pending has its own baseline, which can be unknown. A cached state was
+      // last saved at the pointer revision. Guest/current fallbacks have no
+      // account baseline, so keep that unknown rather than inventing one.
+      baseRevision = pendingState
+        ? pending.baseRevision
+        : cachedState
+          ? pointer?.revision ?? null
+          : null;
+      lastGrowthAt = pointer?.lastGrowthAt || null;
       baseCanonical = null;                 // 基线未知 → 下次联网必须重新对账
-      if (uid && pointer?.aquariumId) store.writePending(uid, pointer.aquariumId, fallback, null);
+      if (uid && aquariumId) {
+        store.writeCurrent(uid, { aquariumId, revision: baseRevision, lastGrowthAt });
+        store.writePending(uid, aquariumId, fallback, baseRevision);
+      }
       setStatus(isOnline() ? STATUS.ERROR : STATUS.OFFLINE, result.message || '');
       return { ok: false, result, offline: true };
     }
@@ -314,37 +329,77 @@ export function createSyncEngine({
   async function settleAndAdopt({ gen = generation, reason = 'sync' } = {}) {
     if (!aquariumId) return { ok: false, skipped: 'no_aquarium' };
     if (isDirty()) return { ok: true, skipped: 'dirty', reason };
+    if (settling) return { ok: true, skipped: 'settling', reason };
     if (!isOnline()) { setStatus(STATUS.OFFLINE); return { ok: false, skipped: 'offline' }; }
 
-    const settled = await api.settleGrowth(aquariumId);
-    if (stale(gen)) return { ok: false, skipped: 'stale' };
-    if (!settled.ok) {
-      const result = settled.result || {};
-      if (result.kind === 'unauthenticated' || result.kind === 'forbidden') {
-        setStatus(STATUS.SIGNED_OUT, result.message || '');
+    const aquariumAtRequest = aquariumId;
+    const revisionAtRequest = baseRevision;
+    const stateAtRequest = cloneState(getState());
+    const canonicalAtRequest = canonicalState(stateAtRequest);
+    const token = ++settleToken;
+    settling = true;
+    try {
+      const settled = await api.settleGrowth(aquariumAtRequest);
+      if (stale(gen)) return { ok: false, skipped: 'stale' };
+      if (!settled.ok) {
+        const result = settled.result || {};
+        if (result.kind === 'unauthenticated' || result.kind === 'forbidden') {
+          setStatus(STATUS.SIGNED_OUT, result.message || '');
+          return { ok: false, result };
+        }
+        if (result.kind === 'not_found') {
+          // 云端那条鱼缸不在了（例如被删除）：先释放结算锁再重新对账。
+          if (settleToken === token) settling = false;
+          return hydrate({ gen });
+        }
+        if (result.retryable) {
+          setStatus(isOnline() ? STATUS.ERROR : STATUS.OFFLINE, result.message || '');
+          return { ok: false, result, offline: true };
+        }
+        setStatus(STATUS.ERROR, result.message || '');
         return { ok: false, result };
       }
-      if (result.kind === 'not_found') {
-        // 云端那条鱼缸不在了（例如被删除）：重新对账一次，必要时开新缸。
-        return hydrate({ gen });
-      }
-      if (result.retryable) {
-        setStatus(isOnline() ? STATUS.ERROR : STATUS.OFFLINE, result.message || '');
-        return { ok: false, result, offline: true };
-      }
-      setStatus(STATUS.ERROR, result.message || '');
-      return { ok: false, result };
-    }
 
-    adopt(validate(settled.result.state), settled.result.revision);
-    lastGrowthAt = settled.result.lastGrowthAt || lastGrowthAt;
-    const uid = userId();
-    if (uid && aquariumId) store.writeCurrent(uid, { aquariumId, revision: baseRevision, lastGrowthAt });
-    setStatus(STATUS.SYNCED);
-    return { ok: true, creditedSeconds: settled.result.creditedSeconds || 0, revision: baseRevision, reason };
+      if (aquariumId !== aquariumAtRequest || baseRevision !== revisionAtRequest) {
+        return { ok: false, skipped: 'baseline_changed' };
+      }
+
+      const current = getState();
+      if (canonicalState(current) !== canonicalAtRequest || isDirty()) {
+        // The server may have credited growth and advanced its revision.
+        // Keep the newer local state and make the difference explicit instead
+        // of adopting the stale response or using its revision as our baseline.
+        return raiseConflict({
+          reason: CONFLICT_REASON.PENDING,
+          cloudState: validate(settled.result.state),
+          cloudRevision: settled.result.revision,
+          localState: validate(current),
+          message: '成长结算期间本机也有修改，云端版本已更新。本机修改已保留，请选择如何处理。'
+        });
+      }
+
+      adopt(validate(settled.result.state), settled.result.revision);
+      lastGrowthAt = settled.result.lastGrowthAt || lastGrowthAt;
+      const uid = userId();
+      if (uid && aquariumId) store.writeCurrent(uid, { aquariumId, revision: baseRevision, lastGrowthAt });
+      setStatus(STATUS.SYNCED);
+      return { ok: true, creditedSeconds: settled.result.creditedSeconds || 0, revision: baseRevision, reason };
+    } finally {
+      if (settleToken === token) {
+        settling = false;
+        if (queued && gen === generation) {
+          queued = false;
+          if (!disposed && !conflict && isDirty()) {
+            persistLocal();
+            scheduleSave();
+          }
+        }
+      }
+    }
   }
 
   function raiseConflict({ reason, cloudState, cloudRevision, localState, message }) {
+    clearSaveTimer();
     // 关键：未同步副本连同「它基于哪个 revision」一起存下来，恢复对账时才能判断云端是否被改过。
     const base = conflict?.baseRevision ?? baseRevision;
     conflict = { reason, cloudState, cloudRevision, localState, baseRevision: base };
@@ -393,20 +448,21 @@ export function createSyncEngine({
     if (mode !== 'cloud') return { ok: true, skipped: 'guest' };
     if (!aquariumId) return { ok: false, skipped: 'no_aquarium' };
     if (conflict) return { ok: false, skipped: 'conflict' };
+    if (settling) { queued = true; return { ok: true, skipped: 'settling' }; }
     if (inFlight) { queued = true; return inFlight; }
 
-    const state = getState();
+    const state = cloneState(getState());
     const canonical = canonicalState(state);
     if (baseCanonical !== null && canonical === baseCanonical) return { ok: true, skipped: 'unchanged' };
 
     const expected = baseRevision;
-    if (!Number.isFinite(Number(expected))) {
+    if (expected == null || !Number.isFinite(Number(expected))) {
       // 基线未知（首次对账还没成功）：不能盲目写，先对账拿到 revision。
       return hydrate({ gen });
     }
 
     setStatus(STATUS.SYNCING);
-    inFlight = (async () => {
+    const request = (async () => {
       const uid = userId();
       const res = await api.saveAquarium({
         aquariumId,
@@ -425,19 +481,27 @@ export function createSyncEngine({
 
       if (res.ok) {
         markSynced(state, res.result.revision);
-        setStatus(STATUS.SYNCED);
+        if (isDirty()) {
+          scheduleSave();
+          setStatus(STATUS.SYNCING);
+        } else {
+          setStatus(STATUS.SYNCED);
+        }
         return { ok: true, revision: baseRevision, reason };
       }
 
       const result = res.result || {};
-      const keepPending = () => { if (uid && aquariumId) store.writePending(uid, aquariumId, state, expected); };
+      // The request may have failed after the user made another edit. Preserve
+      // the current local copy and its current dirty state, never the older
+      // request snapshot captured above.
+      const keepPending = () => { persistLocal(); };
 
       if (result.kind === 'conflict') {
         raiseConflict({
           reason: CONFLICT_REASON.SAVE,
           cloudState: null,
           cloudRevision: result.revision,
-          localState: state,
+          localState: cloneState(getState()),
           message: '云端存档已经被其它设备改过（版本不一致）。本机的改动已保留，请选择如何处理。'
         });
         return { ok: false, result, reason };
@@ -458,12 +522,17 @@ export function createSyncEngine({
       setStatus(result.kind === 'offline' || !isOnline() ? STATUS.OFFLINE : STATUS.ERROR, result.message || '网络不可达');
       return { ok: false, result, reason };
     })();
+    inFlight = request;
 
     try {
-      return await inFlight;
+      return await request;
     } finally {
-      inFlight = null;
-      if (queued && !disposed && !conflict && gen === generation) { queued = false; scheduleSave(); }
+      // A previous account's response must not clear a newer account's save
+      // pointer or consume its queued write.
+      if (inFlight === request) {
+        inFlight = null;
+        if (queued && !disposed && !conflict && gen === generation) { queued = false; scheduleSave(); }
+      }
     }
   }
 
@@ -565,6 +634,7 @@ export function createSyncEngine({
   function dispose() {
     disposed = true;
     generation += 1;
+    settleToken += 1; settling = false;
     clearSaveTimer();
   }
 

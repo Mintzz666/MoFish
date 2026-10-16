@@ -21,7 +21,7 @@ GitHub: https://github.com/Mintzz666/MoFish
 
 `npm start`: local preview. `npm test`: model tests. `npm run build`: static output in dist/.
 
-Keep MoFish as the product title. Preserve local-first operation; cloud synchronization has not been implemented.
+Keep MoFish as the product title. Preserve local-first operation. Phase A cloud synchronization is implemented on the development branch; real Supabase, mail delivery and hosting still require integration verification.
 
 ## Hermes / Codex handoff
 
@@ -32,6 +32,8 @@ When the user asks Codex to assess Hermes's current work, default to read-only r
 ## Approved roadmap and role division
 
 The user has requested email/password auth, cloud saves across devices, later shared aquariums, and then improved UI/3D/motion/aquascaping. Read `docs/ROADMAP.md` for sequence and acceptance criteria. Hermes implements the scoped milestone; Codex guides, reviews and manages accepted releases. Do not implement all milestones in a single pass. Email auth must work without a ChatGPT login gate. The recommended initial stack is independent Cloudflare static hosting plus Supabase Auth/Postgres; no home server or extra D1 database is needed for the initial milestone. No cloud features are claimed complete merely because they appear in this roadmap.
+
+The user also authorizes Codex to delegate Phase A fixes to Luna workers with max reasoning, then independently review the changes and manage the development branch. Hermes remains available for user-forwarded implementation tasks. Do not configure a cloud DeepSeek worker for this workflow. Worker completion is not user acceptance of a version.
 
 ## Local workspace and resource hygiene
 
