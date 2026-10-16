@@ -28,3 +28,7 @@ Keep MoFish as the product title. Preserve local-first operation; cloud synchron
 Read `docs/HERMES-COLLABORATION.md` and `docs/HANDOFF.md` when working on a Hermes development task or reviewing its results. Hermes uses a separate `hermes/<task>` branch and updates the handoff with actual verification evidence. Ordinary development branch pushes are not releases. Do not merge main, tag a product version or deploy during a routine handoff.
 
 When the user asks Codex to assess Hermes's current work, default to read-only review of the specified GitHub branch/commit. Fetch it without overwriting existing local changes; use an isolated checkout/worktree when needed. Report findings and recommendations; modify code only if requested. Record the exact reviewed SHA because an unpushed local Hermes workspace cannot be read here.
+
+## Approved roadmap and role division
+
+The user has requested email/password auth, cloud saves across devices, later shared aquariums, and then improved UI/3D/motion/aquascaping. Read `docs/ROADMAP.md` for sequence and acceptance criteria. Hermes implements the scoped milestone; Codex guides, reviews and manages accepted releases. Do not implement all milestones in a single pass. Email auth must work without a ChatGPT login gate. The recommended initial stack is independent Cloudflare static hosting plus Supabase Auth/Postgres; no home server or extra D1 database is needed for the initial milestone. No cloud features are claimed complete merely because they appear in this roadmap.
