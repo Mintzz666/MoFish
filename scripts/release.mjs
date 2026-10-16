@@ -16,6 +16,7 @@ try{
  const pkg=JSON.parse(readFileSync('package.json','utf8'));
  const remote=git('ls-remote','origin','refs/heads/main','refs/tags/v*');
  const remoteRefs=new Map(remote.split('\n').filter(Boolean).map(line=>{const [sha,ref]=line.split(/\s+/);return [ref,sha];}));
+ const releaseMessage=option('--message');
  let version=option('--version')||pkg.version;
  const semver=/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
  if(!semver.test(version))throw Error('版本号须为 major.minor.patch，例如 0.2.0');
@@ -43,12 +44,14 @@ try{
   pkg.version=version;writeFileSync('package.json',JSON.stringify(pkg,null,2)+'\n');
   git('add','package.json');git('commit','-m',`chore: release ${tag}`);
  }
- const message=option('--message')||`MoFish ${tag}`;
+ const message=releaseMessage||`MoFish ${tag}`;
  if(!localTag)git('tag','-a',tag,'-m',message);
  // Branch + tag succeed together. No force pushes; failed pushes retain the local tag for retry.
  git('push','--atomic','origin','HEAD:refs/heads/main',`refs/tags/${tag}`);
  const verified=git('ls-remote','origin','refs/heads/main',`refs/tags/${tag}^{}`);
- if(!verified.includes(git('rev-parse','HEAD')))throw Error('推送后未能确认远端提交，请检查远端后再报告成功。');
+ const finalHead=git('rev-parse','HEAD');
+ const refs=new Map(verified.split('\n').map(line=>{const [sha,ref]=line.split(/\s+/);return [ref,sha];}));
+ if(refs.get('refs/heads/main')!==finalHead||refs.get(`refs/tags/${tag}^{}`)!==finalHead)throw Error('推送后未能确认远端分支与标签，请检查远端后再报告成功。');
  console.log(`已发布 ${tag}\n${verified}`);
 }catch(error){
  console.error('发布停止：'+error.message);
