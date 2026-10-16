@@ -32,6 +32,10 @@ URL `https://jxqlzuvpuaqwcdvgxnle.supabase.co`，实际地区 `ap-south-1`，Pos
 无需再建项目。公开 publishable key 已用于本轮构建，仅存于忽略的本机配置中，未提交仓库。
 Cloudflare 可复用 Tibo 所用账号，为 MoFish 建独立 Worker `mofish`，不复用 Tibo 的 Worker 或数据库。
 
+当前测试入口已部署：https://mofish.tibo-reset-notifier.workers.dev 。
+部署源码为 `7c975ddb20ac8de75f8b8460699778a48b46fa25`；线上资源一致性、CSP 等响应头及 Chromium 首页已验证。
+阶段 A 仍在收口验收，邮件与登录后双设备同步尚未验证，详见 `docs/HANDOFF.md` 收口清单。
+
 ### 1.2 应用数据库迁移
 
 **当前项目已于 2026-10-16 通过 Supabase 集成应用以下迁移，不需要手工重跑：**
@@ -87,6 +91,8 @@ Supabase advisors：性能提示为 0；安全检查保留三个已登录角色�
 1. **Site URL** 与 **Redirect URLs** 白名单：把最终访问地址加进去，例如
    `https://mofish.<你的域名>/` 与本地联调用的 `http://localhost:5173/`。
    邮箱验证、重置密码的邮件链接会带回这些地址。
+   当前 MoFish 测试地址为 `https://mofish.tibo-reset-notifier.workers.dev/`：将其设为本项目的 Site URL，
+   并加入 Redirect URLs，保留已有仍需使用的合法回调地址。这项配置尚未核验。
 2. **确认邮件**：保持开启（推荐）。注册后用户必须点邮件里的链接才能登录。
 3. **SMTP（上线前必做）**：Supabase 自带发信通道有严格频率限制，不适合真实用户。
    在 Authentication → Emails → SMTP Settings 里配置你自己的发信服务
@@ -122,9 +128,9 @@ npx wrangler@4 deploy
 - 上线后建议绑定自定义域名并确认 HTTPS 生效；域名确定后回到 1.3 更新 Site URL / Redirect URLs。
 - 私有旧的 Sites 地址不受影响，可继续用于旧版体验。
 - 每次改动配置文件后都要重新 `npm run build` 再部署：`dist/config.js` 是构建产物。
-- 当前云环境没有 Cloudflare 凭据，且网络仅开放包仓库等域名。真实部署/HTTP 联调前需要在云环境网络设置
-  放行 `api.cloudflare.com`、所选项目的 `<ref>.supabase.co` 及实际 `*.workers.dev` 入口，
-  或在用户已登录的本机环境执行；本机凭据不会自动同步到云聊天。
+- 当前云环境已通过实际请求验证 Cloudflare 部署凭据及 `api.cloudflare.com`、
+  `jxqlzuvpuaqwcdvgxnle.supabase.co`、`mofish.tibo-reset-notifier.workers.dev` 的访问。
+  新环境仍需核验各自的凭据和网络，不能继承历史就绪结论；本机私密凭据不会自动同步到云聊天。
 
 若希望在 Cloudflare 控制台接 GitHub 自动构建，可为 `Mintzz666/MoFish` 单独创建 Worker，
 开发分支选择 `codex/phase-a-review-fixes`，构建命令 `npm ci && npm run build`，部署命令
@@ -266,6 +272,6 @@ psql "postgresql://.../postgres" -c "\copy (select * from public.aquariums) to '
 - **真实 Auth / PostgREST HTTP 联调**：真实项目迁移和 13 项云端 SQL 验证已完成；
   `npm run test:cloud` 尚未执行，真实 JWT 刷新、REST 错误码及网页到 API 的链路仍待验证。
 - **真实发信**：验证邮件与重置邮件的实际投递、模板与跳转未在真机邮箱验证。
-- **Cloudflare 线上部署**：`_headers`（含 CSP）只在本地预览服务器上验证过，未在 Cloudflare 上实测。
+- **Cloudflare 后的完整用户流程**：独立 HTTPS 入口、16 个线上资源、CSP 等响应头和 Chromium 首页已验证；注册/邮件/登录后同步仍需按收口清单验证。
 - **真机浏览器**：iOS Safari / Android Chrome 未实测（本轮为 Chrome headless + 真实视口仿真）。
 - **多人共享、3D、页面重设计**：属于阶段 B/C/D，本阶段未实现。

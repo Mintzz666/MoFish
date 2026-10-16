@@ -6,7 +6,7 @@
 
 用户已授权 Codex 指挥 Luna（max 思考）修复阶段 A，Codex 负责独立复核、集成验证和开发分支版本管理。
 用户进一步要求双方完成阶段 A，包括独立云入口和真实联调；已授权准备和部署测试入口，
-尚未合并 main、未打产品版本标签、未运行正式 release、未真实部署，仍需用户验收。
+Cloudflare 独立测试入口已部署；尚未合并 main、未打产品版本标签、未运行正式 release，仍需用户验收。
 
 ## 范围和架构
 
@@ -92,11 +92,25 @@ Luna 定向测试还覆盖认证/配置、同步/存储、云端脚本和并发�
 
 - 两份真实 Supabase 数据库迁移及 13 项云端 SQL 验证已完成；未运行 `npm run test:cloud`，JWT 轮换、RPC HTTP 链路及真实 REST 错误码仍待验证。
 - 未验证邮箱确认及重置邮件投递、SMTP、模板和跳转白名单。
-- 未部署 Cloudflare，CSP 等响应头目前只在本地预览验证。
+- Cloudflare 测试入口与线上 CSP 等响应头已验证，详见下方部署记录；登录后完整 HTTP 链路仍待验证。
 - 未测试 iOS Safari / Android Chrome 真机；移动尺寸测试属于浏览器视口仿真。
-- GitHub Actions 在 `fd407390d75434d7b83f64d756b340e1d4de2021` 已通过 124 项测试、50 项 E2E、构建与部署预演；本次新增迁移回归的 CI 以新提交检查为准。
+- 已核验 `7c975ddb20ac8de75f8b8460699778a48b46fa25` 的 [GitHub Actions #3](https://github.com/Mintzz666/MoFish/actions/runs/38865316559) 成功：严格 PostgreSQL 测试、构建、Wrangler 预演、本地假后端浏览器测试及运行库清理步骤均通过。这不替代真实 Auth/邮件验收。
 - 用户已有 Cloudflare 账号（Tibo 正在使用）；Supabase 项目已创建并连接，无需再授权同一次迁移。
-- 当前环境没有云凭据，网络只开放包仓库等指定域名；真实 HTTP 联调需要配置实际项目、Cloudflare API 和访问域名的网络许可，或在已有权限的本机执行。
+- 当前环境的 Cloudflare token/account 与三个目标域名已通过实际请求验证；公开 Supabase 构建配置已恢复到忽略的 `.env`。平台 readiness 为 `unknown`，不能将其描述为平台已确认 ready。完整冒烟所需 `MOFISH_SMOKE_SERVICE_ROLE_KEY` 未配置，私密配置仍由用户在安全设置中完成，不通过聊天传递。
+
+## Cloudflare 测试部署记录（2026-10-16）
+
+- 线上源码：`7c975ddb20ac8de75f8b8460699778a48b46fa25`，分支 `codex/phase-a-review-fixes`。
+- 独立入口：https://mofish.tibo-reset-notifier.workers.dev ，不需要 ChatGPT 登录。
+- Worker：`mofish`；Cloudflare version ID：`17b32988-f7e2-4b72-a062-0a3f9490fa15`。
+- 构建、Wrangler 4.151.0 预演及实际部署成功；16 个可访问资源 HTTP 200，内容与本地构建逐字节一致。
+- 线上 CSP、nosniff、DENY、COOP 生效；`config.js` / `sw.js` 返回 `Cache-Control: no-cache`。
+- Chromium 1280×800 首页加载 HTTP 200，标题 MoFish，鱼缸 canvas 和登录入口存在，无页面脚本异常；390×844 无横向溢出。这是视口检查，不是真机或已登录跨设备验收。
+- 36 项认证、配置及冒烟脚本回归通过，0 失败/跳过；未重新累计历史整套测试。
+- 实际 Supabase `/auth/v1/settings` 返回 200，邮箱确认开启；匿名读取鱼缸表返回 401 / PostgreSQL `42501`，符合预期。没有创建真实账号、发送邮件或执行管理冒烟。
+- Python 默认 User-Agent 被 Cloudflare 以 403 / 1010 拒绝；浏览器 User-Agent 与真实 Chromium 均成功，不能把默认脚本的 403 当作页面不可用。
+- Tibo 的设置摘要和当前 deployment ID 在前后检查一致；旧 Sites 未访问或修改；现有构建/部署令牌保留，未轮换或撤销。
+- 无凭据验证记录及截图：`/workspace/reviews/mofish-cloudflare-20261016/`。本轮 Chromium 已关闭，临时 profile 已清理。
 
 ## 阶段 A 验收进度
 
@@ -104,12 +118,31 @@ Luna 定向测试还覆盖认证/配置、同步/存储、云端脚本和并发�
 | --- | --- |
 | 代码、旧存档兼容、账号/同步竞态 | 单元/集成及本地浏览器检查已通过 |
 | 数据库 RLS、权限、原子 revision、真实并发成长 | 本地内核、多连接及真实 Supabase SQL 13 项通过；临时去掉行锁会复现重复奖励 |
-| Supabase Auth / PostgREST 真实项目 | 已连接并应用迁移；真实 HTTP 及 Auth 仍待验证 |
+| Supabase Auth / PostgREST 真实项目 | 已应用迁移；公开认证设置及匿名拒绝 HTTP 已验证，登录/刷新及受认证 RPC 仍待验证 |
 | 验证及重置邮件实际投递 | 等待 SMTP 与真实邮箱检查，未验证 |
-| Cloudflare 独立 HTTPS 入口 | Wrangler 预演通过，等待部署接入，未上线 |
+| Cloudflare 独立 HTTPS 入口 | 已部署指定提交；线上资源一致性、响应头及 Chromium 首页检查通过 |
 | 用户电脑/手机的真实网络体验 | 等待上线后双设备检查，未验证 |
 
 以上未完成的真实环节通过前，阶段 A 不标记为完成；不提前开始 B/C/D。
+
+## 阶段 A 收口清单
+
+四阶段范围保持 `docs/ROADMAP.md` 的约定：A 身份与单用户云存档 → B 多人共享与成员权限 → C 页面与基础 3D → D 鱼体运动、水面、水草与造景。本轮只收口 A。
+
+2026-10-16 用户确认：真实注册验证邮件、密码重置邮件、电脑/手机同账号同步均尚未测试；以下待验收项没有用户侧通过证据。
+
+按以下顺序补齐证据，每项记录日期、设备/浏览器、实际结果；未执行保持待验收：
+
+| 项目 | 执行方式 / 通过标准 | 当前状态 |
+| --- | --- | --- |
+| 真实 HTTP 自动冒烟 | 用户在安全环境配置专用 `MOFISH_SMOKE_SERVICE_ROLE_KEY` 后运行 `npm run test:cloud`；随机测试账号登录/刷新、第二会话恢复、保存/冲突、越权拒绝、成长与清理全部成功；仅测试本轮账号 | 待配置、待执行 |
+| 邮件与回调 | 用户在 Supabase 核验 SMTP、Site URL 和 Redirect URLs 含测试入口；用专用测试邮箱从网页注册、收确认邮件并回到测试入口登录；忘记密码邮件回到同一入口，改密后重新登录成功 | 待用户配置/实测 |
+| 双设备恢复 | 电脑 A 给鱼命名、喂食、改造景并等到已同步；手机 B 登录同账号，核对名字、鱼种、成长、造景，刷新后仍一致 | 待真机实测 |
+| 冲突与离线 | A/B 从同 revision 同时编辑，只接受一个，另一端保留本地副本并显示冲突；离线编辑、重连、重复保存不丢档或重复成长 | 待线上实测；本地回归已通过 |
+| 退出/换号/游客兼容 | 退出回到游客；测试账号乙看不到甲的数据；原游客存档、导入导出和备份保留；不使用重要个人存档做冲突试验 | 待线上实测；本地回归已通过 |
+| 最终验收 | 上述结果补齐，修复实际发现的问题后由用户明确验收；产品版本建议 v0.2.0，正式发布按 AGENTS.md 单独执行 | 尚未验收、未发版 |
+
+完整冒烟不发邮件，不能替代邮件验收；自动化两个会话不能替代用户真实电脑/手机网络检查。配置步骤和操作路径见 `docs/CLOUD-SETUP.md` 的 1.3、2.1、2.3。
 
 配置与回滚见 `docs/CLOUD-SETUP.md`。公开项目 URL/anon key 可进入构建，service_role/secret key 不得进入前端。
 不要求用户提供密钥到聊天或仓库；SMTP 和私密凭据只在服务控制台配置。
