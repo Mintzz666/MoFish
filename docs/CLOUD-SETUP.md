@@ -27,6 +27,11 @@
    （Project Settings → API Keys；新版可能显示为 `sb_publishable_...`）。
 3. 注意：免费项目长期无访问会暂停，恢复需要控制台操作。
 
+当前用户已有 Cloudflare（Tibo 所用账号），Supabase 尚待创建。可以复用 Cloudflare 账号，
+为 MoFish 建独立 Worker，名称为 `mofish`，不复用 Tibo 的 Worker 或数据库。
+Supabase 项目可命名 `MoFish`，地区先按实际设备网络选择（例如 Singapore），数据库密码由用户保存。
+若已连接 Supabase 集成，告知项目名称即可让 Codex 检查项目及迁移；不用把管理密钥发到聊天。
+
 ### 1.2 应用数据库迁移
 
 方式一（最省事）：控制台 → SQL Editor → 新建查询 → 粘贴
@@ -71,6 +76,18 @@ npx supabase db push
 
 ### 1.4 构建与部署（Cloudflare）
 
+推荐在本机 `.env` 或云环境的安全变量设置中填入 `.env.example` 所列配置。
+构建/部署/冒烟 CLI 会读取仓库 `.env`，已经导出的环境变量优先。不要提交真实 `.env`。
+Cloudflare API token 限定到目标账号所需的 Workers 部署权限，账号 ID 在 Cloudflare 控制台获取。
+`deploy:cloudflare` 要求显式的账号 ID、token 和 Supabase 公开配置；缺失时停止，不发布游客构建。
+
+```sh
+npm run deploy:cloudflare -- --dry-run  # 构建并由 Wrangler 校验，不发布；无需 Cloudflare 凭据
+npm run deploy:cloudflare              # 配置齐全后，构建并部署独立 mofish Worker
+```
+
+也可自行用 Wrangler 登录并执行：
+
 ```sh
 # 1) 构建：把公开凭据写进 dist/config.js（不入库）
 MOFISH_SUPABASE_URL="https://<project-ref>.supabase.co" \
@@ -85,6 +102,14 @@ npx wrangler@4 deploy
 - 上线后建议绑定自定义域名并确认 HTTPS 生效；域名确定后回到 1.3 更新 Site URL / Redirect URLs。
 - 私有旧的 Sites 地址不受影响，可继续用于旧版体验。
 - 每次改动配置文件后都要重新 `npm run build` 再部署：`dist/config.js` 是构建产物。
+- 当前云环境没有 Cloudflare 凭据，且网络仅开放包仓库等域名。真实部署/HTTP 联调前需要在云环境网络设置
+  放行 `api.cloudflare.com`、所选项目的 `<ref>.supabase.co` 及实际 `*.workers.dev` 入口，
+  或在用户已登录的本机环境执行；本机凭据不会自动同步到云聊天。
+
+若希望在 Cloudflare 控制台接 GitHub 自动构建，可为 `Mintzz666/MoFish` 单独创建 Worker，
+开发分支选择 `codex/phase-a-review-fixes`，构建命令 `npm ci && npm run build`，部署命令
+`npx wrangler@4 deploy`。只配置 Supabase 公开构建变量；service_role/SMTP 密钥不进入站点构建。
+控制台连接 GitHub 及选择账号需用户完成；项目创建后提供访问 URL，再配 Auth 跳转白名单。
 
 ### 1.5 本地联调（不需要云账号也能跑）
 
@@ -111,9 +136,12 @@ MOFISH_SMOKE_SERVICE_ROLE_KEY="<service role key，只在本机环境变量里>"
 node scripts/cloud-smoke.mjs
 ```
 
-它会真实执行：开缸 → 保存 → 旧 revision 冲突 → **另一个账号越权读/改/删被拒** →
-幂等成长结算 → 服务端拒绝非法存档，并在结束时清理它创建的测试账号。
-没有 service_role key 时，也可以提供两个已确认邮箱的账号（见脚本头部注释）。
+脚本只接受 Supabase Legacy API Keys 中未过期、`role=service_role` 的 JWT，不支持 `sb_secret_`。
+它会用随机邮箱创建本轮专用临时账号，通过应用的官方 SDK facade 验证登录和刷新，
+再验证第二设备同账号恢复 → 保存 → 旧 revision 冲突 → **另一个账号越权读/改/删被拒** →
+成长记账 → 服务端拒绝非法存档，并在结束时删除及验证本轮创建的账号。
+不接受已有账号的邮箱密码，也不接触已有账号存档。任何接口错误、超时或清理失败都会使检查失败。
+临时账号由管理员直接确认，不发注册邮件；真实邮箱验证/重置邮件仍需按 1.3 和 2.3 单独实测。
 
 ### 2.2 并发测试（两个真实数据库连接）
 
@@ -127,6 +155,12 @@ npm run test:concurrency
   测试结束后关闭实例并清理本轮目录；启动失败也会清理确认无运行实例的目录。停止失败则保留目录并报告路径。
 - **不再支持 `MOFISH_TEST_PG_URL`**：配置该变量会在连接前报错。不要把生产库、Supabase 项目或任何已有业务库交给破坏性测试。
 - 嵌入式二进制缺失或本机动态库不兼容时，真实并发用例明确标 SKIP 并说明原因；安全隔离单测仍应执行。SKIP 不等于真实并发通过。
+- 设置 `MOFISH_REQUIRE_POSTGRES=1` 时启动失败将使测试失败，CI 默认启用，不能靠跳过得到绿色检查。
+- GitHub CI 在 Ubuntu 24.04/Node 22 上运行；`scripts/ci/prepare-postgres-runtime.sh` 将 SHA256 校验过的
+  Ubuntu ICU 60 官方包解压到唯一临时目录，通过本进程 `LD_LIBRARY_PATH` 给 embedded PostgreSQL 使用，
+  不替换系统库、不进入前端产物。该适配命令及 PostgreSQL 18.4 启动已在云环境实际验证。
+- 本轮云端补跑真实多连接与安全隔离检查 **10/10 通过、0 跳过**；移除行锁的临时迁移副本会触发双重/三重奖励失败，
+  真实迁移保持原样。PostgreSQL 测试不能替代 Supabase Auth/PostgREST 线上联调。
 
 ### 2.3 人工验证（两台设备）
 
@@ -211,8 +245,7 @@ psql "postgresql://.../postgres" -c "\copy (select * from public.aquariums) to '
 
 - **真实 Supabase 项目联调**：本轮没有云账号，`npm run test:cloud`（`scripts/cloud-smoke.mjs`）
   已写好但**从未执行过**；数据库侧的权限模型、RLS、冲突与幂等结算用**本机真实 Postgres 引擎**
-  （PGlite 内核）验证过，但那不等于 Supabase 线上验证。Hermes 曾报告本机多连接测试通过；
-  本轮云端环境缺少 `libicuuc.so.60`，四项真实多连接测试明确跳过，需在可运行的隔离环境重测。
+  （PGlite 内核及 embedded PostgreSQL 多连接）验证过，但那不等于 Supabase 线上验证。
 - **真实发信**：验证邮件与重置邮件的实际投递、模板与跳转未在真机邮箱验证。
 - **Cloudflare 线上部署**：`_headers`（含 CSP）只在本地预览服务器上验证过，未在 Cloudflare 上实测。
 - **真机浏览器**：iOS Safari / Android Chrome 未实测（本轮为 Chrome headless + 真实视口仿真）。

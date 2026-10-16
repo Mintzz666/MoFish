@@ -17,10 +17,17 @@ npm run build     # 生成 dist/
 npm run preview   # 服务 dist/ 并应用 _headers（含 CSP），用于部署前自检
 npm run test:e2e  # 浏览器端到端（需要本机 Chrome；用本地假后端模拟云服务）
 npm run test:concurrency   # 安全隔离检查及自建临时 Postgres 多连接测试（见 docs/CLOUD-SETUP.md）
+npm run deploy:cloudflare  # 配置 Supabase 公开值及 Cloudflare 部署凭据后，构建并部署独立 mofish Worker
 ```
 
 `dist/` 可部署至 Cloudflare Workers 静态资源、GitHub Pages 或任意 HTTPS 静态托管。无需常驻应用服务器。
 首次加载完成后通过 Service Worker 缓存静态资源，可离线使用；浏览器安装方式因平台而异。
+
+构建和部署会读取本机 `.env`（不会覆盖已设置的环境变量）；样例见 `.env.example`，不要提交真实配置。
+部署命令要求完整云配置，缺失时直接停止，避免误把游客构建当作云端版本发布。
+
+GitHub PR 和 main 推送会运行 `.github/workflows/ci.yml`：单元、SQL/真实多连接、构建及浏览器测试。
+CI 用校验过的 ICU 60 包提供隔离兼容库，并开启 `MOFISH_REQUIRE_POSTGRES=1`，数据库启动失败会使检查失败。
 
 浏览器测试可通过 `MOFISH_CHROME_PATH` 指定 Chrome/Chromium；每轮使用独立临时 profile 和调试端口。
 测试退出会关闭自己启动的浏览器与服务，默认清理临时产物；失败或传入 `--keep` 时保留截图/结果用于排查。

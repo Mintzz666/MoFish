@@ -35,6 +35,8 @@ The user has requested email/password auth, cloud saves across devices, later sh
 
 The user also authorizes Codex to delegate Phase A fixes to Luna workers with max reasoning, then independently review the changes and manage the development branch. Hermes remains available for user-forwarded implementation tasks. Do not configure a cloud DeepSeek worker for this workflow. Worker completion is not user acceptance of a version.
 
+The user has now requested that Codex and Luna finish Phase A, including the independent cloud entry and real integration checks. This authorizes configuring and deploying the MoFish test entry once the required account access is available; preserve the unrelated Tibo project and the existing private Sites deployment. Supabase account creation/connection and private credential setup stay with the user. This request does not accept a product version or authorize merging main or running the release hook.
+
 ## Local workspace and resource hygiene
 
 Every future Hermes task prompt must include local file/process management and end-of-task cleanup. Preserve source, lockfiles, user data, useful caches and necessary review evidence. Keep temporary browser profiles, screenshots, logs and test databases in a unique task-scoped directory; record paths and owner process IDs. Reuse the normal project directory rather than creating duplicate source trees or suffixed backup copies. Do not commit node_modules, dist, secrets, personal saves or large diagnostic artifacts.

@@ -5,10 +5,24 @@ import path from 'node:path';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { readMigrations, SUPABASE_EMULATION, USERS } from './harness.mjs';
 import {
+  embeddedPostgresStartupFailure,
   prepareFreshTestDatabase,
   startOwnedEmbeddedPostgres,
   withEmbeddedPostgresOnly,
 } from './concurrency-safety.mjs';
+
+test('required embedded PostgreSQL startup failures are hard errors; default mode keeps an explicit skip', () => {
+  const cause = new Error('simulated missing libicuuc.so.60');
+  assert.throws(
+    () => embeddedPostgresStartupFailure(cause, { MOFISH_REQUIRE_POSTGRES: '1' }),
+    error => {
+      assert.match(error.message, /MOFISH_REQUIRE_POSTGRES=1/);
+      assert.equal(error.cause, cause);
+      return true;
+    }
+  );
+  assert.match(embeddedPostgresStartupFailure(cause, {}), /真实并发用例标为 SKIP/);
+});
 
 test('caller-provided PostgreSQL URLs are rejected before the launcher can connect', async () => {
   let launchCount = 0;

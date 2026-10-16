@@ -10,6 +10,16 @@ import { mkdtemp, rm } from 'node:fs/promises';
 
 const reservedPorts = new Set();
 
+/** Keep the default opt-in skip behavior, with a strict mode for CI. */
+export function embeddedPostgresStartupFailure(err, env = process.env) {
+  const cleanupDetail = err.cleanupError ? ` 清理状态：${err.cleanupError.message}` : '';
+  const startupFailure = `无法启动隔离的嵌入式真实 Postgres（${err.message}）。${cleanupDetail}`;
+  if (env.MOFISH_REQUIRE_POSTGRES === '1') {
+    throw new Error(`${startupFailure} MOFISH_REQUIRE_POSTGRES=1，真实并发验证必须启动 PostgreSQL。`, { cause: err });
+  }
+  return `${startupFailure} 真实并发用例标为 SKIP；MOFISH_TEST_PG_URL 不受支持。`;
+}
+
 export function rejectExternalPostgresUrl(env = process.env) {
   if (typeof env.MOFISH_TEST_PG_URL === 'string' && env.MOFISH_TEST_PG_URL.trim()) {
     throw new Error(

@@ -8,6 +8,10 @@
 import { cp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { readCloudConfig, classifyKey } from './web/cloud/config.js';
 import { build } from 'esbuild';
+import { loadEnvFile } from 'node:process';
+
+try { loadEnvFile(new URL('./.env', import.meta.url)); }
+catch (error) { if (error.code !== 'ENOENT') throw error; }
 
 const url = (process.env.MOFISH_SUPABASE_URL || '').trim();
 const anonKey = (process.env.MOFISH_SUPABASE_ANON_KEY || '').trim();

@@ -10,6 +10,7 @@
 //   2) `MOFISH_TEST_PG_URL` 被明确拒绝：外部实例可能包含用户数据库或集群角色，
 //      测试无法证明其可销毁，因此不会连接它。
 //   3) 嵌入式 Postgres 缺失或无法启动时，本文件的四个真实并发用例会以具体原因标 SKIP。
+//   4) CI 可设置 `MOFISH_REQUIRE_POSTGRES=1`，将上述启动问题提升为硬失败。
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { stat } from 'node:fs/promises';
 import { readMigrations, SUPABASE_EMULATION, USERS, validState } from './harness.mjs';
 import {
+  embeddedPostgresStartupFailure,
   prepareFreshTestDatabase,
   rejectExternalPostgresUrl,
   startOwnedEmbeddedPostgres,
@@ -41,9 +43,7 @@ rejectExternalPostgresUrl(process.env);
 try {
   server = await startPostgres();
 } catch (err) {
-  const cleanupDetail = err.cleanupError ? ` 清理状态：${err.cleanupError.message}` : '';
-  skipReason = `无法启动隔离的嵌入式真实 Postgres（${err.message}）。`
-    + `${cleanupDetail} 真实并发用例标为 SKIP；MOFISH_TEST_PG_URL 不受支持。`;
+  skipReason = embeddedPostgresStartupFailure(err, process.env);
 }
 
 test.before(async () => {
