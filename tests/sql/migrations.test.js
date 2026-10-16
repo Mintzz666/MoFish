@@ -107,6 +107,65 @@ test('迁移对象齐备：表、唯一索引、RLS、四个函数，且只有 S
   assert.equal(priv.can_validate, false, '校验函数不对客户端开放');
 });
 
+test('hardening 迁移收紧平台 event-trigger helper 权限并保留 owner RLS initplan', { skip: skipReason }, async () => {
+  const hardening = (await readMigrations()).find(m => m.name.includes('phase_a_cloud_hardening'));
+  assert.ok(hardening, '版本化 hardening 迁移存在');
+
+  await db.asAdmin(async () => {
+    // Supabase 平台可能提供此 SECURITY DEFINER event-trigger helper。
+    // 显式授予客户端，证明新迁移会撤回既有 grants，而非只依赖默认 ACL。
+    await db.db.exec(`
+      create or replace function public.rls_auto_enable()
+      returns event_trigger
+      language plpgsql
+      security definer
+      set search_path = public, pg_temp
+      as $$ begin null; end $$;
+      grant execute on function public.rls_auto_enable() to anon, authenticated;
+    `);
+    await db.db.exec(hardening.sql);
+  });
+
+  const privileges = await db.asAdmin(async () => (await db.query(`
+    select p.prosecdef,
+           p.proowner::regrole::text as owner_name,
+           has_function_privilege('anon', 'public.rls_auto_enable()', 'EXECUTE') as anon_execute,
+           has_function_privilege('authenticated', 'public.rls_auto_enable()', 'EXECUTE') as authenticated_execute,
+           has_function_privilege(current_user, 'public.rls_auto_enable()', 'EXECUTE') as owner_execute
+      from pg_proc p
+      join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public' and p.proname = 'rls_auto_enable'
+  `))[0]);
+  assert.equal(privileges.prosecdef, true, '平台 helper 保持 SECURITY DEFINER');
+  assert.equal(privileges.anon_execute, false, 'anon 不能执行平台 helper');
+  assert.equal(privileges.authenticated_execute, false, 'authenticated 不能执行平台 helper');
+  assert.equal(privileges.owner_execute, true, `${privileges.owner_name} 仍保有函数执行权`);
+
+  const policy = await db.asAdmin(async () => (await db.query(`
+    select qual
+      from pg_policies
+     where schemaname = 'public'
+       and tablename = 'aquariums'
+       and policyname = 'aquariums_select_own'
+  `))[0]);
+  assert.ok(policy, '所有者读取策略仍存在');
+  assert.match(policy.qual, /owner_id\s*=\s*\(\s*SELECT\s+auth\.uid\(\)/i,
+    '策略仍按 auth.uid() 限制 owner，并使用 scalar subquery 形态');
+
+  const mine = await freshAquarium(USERS.alice, validState({ idPrefix: 'hardening' }));
+  const ownRows = await db.asUser(USERS.alice, async () => db.query(
+    'select id from public.aquariums where id = $1', [mine.aquarium_id]));
+  const otherRows = await db.asUser(USERS.bob, async () => db.query(
+    'select id from public.aquariums where id = $1', [mine.aquarium_id]));
+  assert.equal(ownRows.length, 1, 'owner 仍能读取自己的鱼缸');
+  assert.equal(otherRows.length, 0, '其他登录用户仍读不到该鱼缸');
+
+  const explainRows = await db.asUser(USERS.alice, async () => db.query(
+    'explain (costs off) select id from public.aquariums'));
+  const plan = explainRows.map(row => Object.values(row)[0]).join('\n');
+  assert.match(plan, /InitPlan/i, `owner policy 应被规划为 InitPlan，实际计划：\n${plan}`);
+});
+
 // ------------------------------------------------------------------ 表级写权限已收回（评审 P1-5）
 
 test('authenticated 无法绕过 RPC 直接改写存档、revision 与成长锚点', { skip: skipReason }, async () => {

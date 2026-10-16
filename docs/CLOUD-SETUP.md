@@ -3,7 +3,7 @@
 本文是「邮箱密码登录 + 跨设备云存档」的落地指南：需要你在控制台做的最小步骤、部署与验证、
 备份/恢复/回滚，以及本阶段尚未验证的边界。
 
-配套实现：`supabase/migrations/0001_phase_a_cloud_saves.sql`（数据库）、`web/cloud/*`（前端）、
+配套实现：`supabase/migrations/`（数据库）、`web/cloud/*`（前端）、
 `wrangler.toml`（Cloudflare 静态资源）、`.env.example`（变量清单）。
 
 ## 0. 一分钟总览
@@ -27,18 +27,28 @@
    （Project Settings → API Keys；新版可能显示为 `sb_publishable_...`）。
 3. 注意：免费项目长期无访问会暂停，恢复需要控制台操作。
 
-当前用户已有 Cloudflare（Tibo 所用账号），Supabase 尚待创建。可以复用 Cloudflare 账号，
-为 MoFish 建独立 Worker，名称为 `mofish`，不复用 Tibo 的 Worker 或数据库。
-Supabase 项目可命名 `MoFish`，地区先按实际设备网络选择（例如 Singapore），数据库密码由用户保存。
-若已连接 Supabase 集成，告知项目名称即可让 Codex 检查项目及迁移；不用把管理密钥发到聊天。
+当前用户的 **MoFish 项目已创建并连接**：ref `jxqlzuvpuaqwcdvgxnle`，
+URL `https://jxqlzuvpuaqwcdvgxnle.supabase.co`，实际地区 `ap-south-1`，PostgreSQL 17.11。
+无需再建项目。公开 publishable key 已用于本轮构建，仅存于忽略的本机配置中，未提交仓库。
+Cloudflare 可复用 Tibo 所用账号，为 MoFish 建独立 Worker `mofish`，不复用 Tibo 的 Worker 或数据库。
 
 ### 1.2 应用数据库迁移
 
-方式一（最省事）：控制台 → SQL Editor → 新建查询 → 粘贴
-`supabase/migrations/0001_phase_a_cloud_saves.sql` 全文件 → Run。
-脚本是幂等的（`create ... if not exists` / `create or replace`），重复执行不会报错也不会丢数据。
+**当前项目已于 2026-10-16 通过 Supabase 集成应用以下迁移，不需要手工重跑：**
 
-方式二（有 supabase CLI 时）：
+| 云端版本 / 仓库文件 | 内容 |
+| --- | --- |
+| `20261016065742_phase_a_cloud_saves.sql` | 鱼缸表、RLS、权限和三个写入 RPC |
+| `20261016070336_phase_a_cloud_hardening.sql` | 收回平台内部 `rls_auto_enable()` 的客户端执行权，优化 owner 策略的身份子查询 |
+
+原 `0001_phase_a_cloud_saves.sql` 仅按首次云端实际记录的版本改名，SQL 字节未改，SHA256 为
+`c58044a46bc978554449f9e09863401e8860fe6d0c206511b6b478113f08790f`。
+后续 hardening 迁移的 SHA256 为
+`83736e39e57690a501a5cd9b4fe7dcc883f9254357519ba7e6b8009f78ca8b41`。
+本地版本与云端迁移历史已对齐；已应用的 SQL 保持只读，后续变更新增迁移。
+
+需要为另一个全新项目部署时，先确认目标项目，再按文件名顺序应用这两份迁移；推荐通过 CLI
+记录迁移历史（不要对当前项目重新初始化）：
 
 ```sh
 npx supabase link --project-ref <project-ref>
@@ -48,6 +58,16 @@ npx supabase db push
 迁移会创建 `public.aquariums` 表、RLS 只读策略、唯一索引 `aquariums_owner_phase_a_uidx`，
 以及三个**受控写入函数** `ensure_aquarium` / `save_aquarium` / `settle_growth`
 （外加内部校验函数 `mofish_state_error`）。
+
+实际云端 SQL 验证通过 13 项：创建及幂等创建、本人读取、原子保存、旧 revision 冲突、
+直接写表被拒、非法存档被拒、跨账号读取/保存/结算被拒、成长结算及重复调用不重复奖励、匿名访问被拒。
+验证使用事务内专用测试身份并回滚；结束后 `auth.users` 和 `aquariums` 均为 0 行。
+这证明真实云数据库的权限及函数行为，不替代 Auth 发信、JWT 刷新和 HTTP API 联调。
+
+Supabase advisors：性能提示为 0；安全检查保留三个已登录角色可调用 `SECURITY DEFINER` RPC 的提示，
+属于上面的受控写入设计，函数固定 search_path、检查用户及 owner，匿名执行权已收回。
+参见 [官方提示说明](https://supabase.com/docs/guides/database/database-linter?lint=0029_authenticated_security_definer_function_executable)。
+平台内部辅助函数的客户端执行权已撤回，自动 RLS event trigger 仍保留并启用。
 
 **权限模型（重要，请勿改成给客户端写表权限）**：
 
@@ -243,9 +263,8 @@ psql "postgresql://.../postgres" -c "\copy (select * from public.aquariums) to '
 
 ## 6. 本阶段未验证的部分（不要当成已完成）
 
-- **真实 Supabase 项目联调**：本轮没有云账号，`npm run test:cloud`（`scripts/cloud-smoke.mjs`）
-  已写好但**从未执行过**；数据库侧的权限模型、RLS、冲突与幂等结算用**本机真实 Postgres 引擎**
-  （PGlite 内核及 embedded PostgreSQL 多连接）验证过，但那不等于 Supabase 线上验证。
+- **真实 Auth / PostgREST HTTP 联调**：真实项目迁移和 13 项云端 SQL 验证已完成；
+  `npm run test:cloud` 尚未执行，真实 JWT 刷新、REST 错误码及网页到 API 的链路仍待验证。
 - **真实发信**：验证邮件与重置邮件的实际投递、模板与跳转未在真机邮箱验证。
 - **Cloudflare 线上部署**：`_headers`（含 CSP）只在本地预览服务器上验证过，未在 Cloudflare 上实测。
 - **真机浏览器**：iOS Safari / Android Chrome 未实测（本轮为 Chrome headless + 真实视口仿真）。

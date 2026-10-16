@@ -4,7 +4,7 @@
 -- 本脚本会 **删除 public.aquariums 表及其中的全部云端存档**（执行后无法从数据库恢复，
 -- 只能靠 pg_dump 备份恢复）。常见情况下应该：
 --   1) 前端问题 → 回滚 Cloudflare 上一次部署，数据库不动；
---   2) 函数/策略问题 → 重新应用 supabase/migrations/0001_phase_a_cloud_saves.sql（幂等）；
+--   2) 函数/策略问题 → 新建版本化修复迁移，先在测试项目验证；不改写已应用的迁移；
 --   3) 暂时不用云功能 → 用空的 dist/config.js 重新构建部署，数据库保留；
 --   4) 只有确认不再需要云端数据时，才执行本文件，并且先完成备份：
 --        pg_dump "<连接串>" --no-owner --no-privileges -Fc -f mofish-before-drop.dump
