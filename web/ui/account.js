@@ -38,6 +38,7 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
     forgot: $('auth-forgot'),
     resend: $('auth-resend'),
     notice: $('account-notice'),
+    accountTitle: $('account-title'),
     cloudOff: $('cloud-off-note'),
     sessionEmail: $('session-email'),
     sessionDetail: $('session-detail'),
@@ -167,6 +168,7 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
         ? `为 ${flow.email} 设置新密码（至少 6 位）。链接对应的登录状态已经生效。`
         : '请设置一个新密码（至少 6 位）。';
     }
+    if (els.accountTitle) els.accountTitle.textContent = showReset ? '设置新密码' : '把小鱼带到别的设备';
 
     if (els.cloudOff) {
       els.cloudOff.hidden = cloudReady;
