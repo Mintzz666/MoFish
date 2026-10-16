@@ -1,0 +1,50 @@
+name: MoFish checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      MOFISH_REQUIRE_POSTGRES: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Prepare isolated PostgreSQL runtime
+        run: bash scripts/ci/prepare-postgres-runtime.sh
+      - name: Unit, SQL and actual multi-connection tests
+        run: npm test
+      - run: npm run build
+      - name: Validate Cloudflare packaging (no deployment)
+        run: npm run deploy:cloudflare -- --dry-run
+        env:
+          MOFISH_SUPABASE_URL: https://example.supabase.co
+          MOFISH_SUPABASE_ANON_KEY: sb_publishable_ci_fixture
+      - name: Browser tests (local fake backend)
+        run: npm run test:e2e
+        env:
+          MOFISH_CHROME_PATH: /usr/bin/google-chrome
+          MOFISH_CHROME_NO_SANDBOX: '1'
+      - name: Remove owned compatibility runtime
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${MOFISH_PG_RUNTIME_DIR:-}" && "$MOFISH_PG_RUNTIME_DIR" == "$RUNNER_TEMP"/mofish-pg-runtime.* ]]; then
+            rm -rf -- "$MOFISH_PG_RUNTIME_DIR"
+          fi

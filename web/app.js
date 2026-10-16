@@ -1,14 +1,83 @@
-import {SPECIES,MAX_FISH,initial,makeFish,validate,catchUp,eat,createStorage} from './model.js';
+import {SPECIES,MAX_FISH,initial,makeFish,validate,catchUp,eat,canonicalState} from './model.js';
+import {createLocalStore,keys} from './storage.js';
+import cloudConfig from './config.js';
+import {readCloudConfig} from './cloud/config.js';
+import {createCloudStack} from './cloud/client.js';
+import {createSyncEngine,STATUS} from './cloud/sync.js';
+import {parseAuthCallback} from './cloud/auth.js';
+import {createAccountUI} from './ui/account.js';
+
 const $=id=>document.getElementById(id);
 const canvas=$('tank'),ctx=canvas.getContext('2d');
-let storage,state,loadWarning=false,toastTimer;
-try{storage=createStorage(localStorage);state=storage.load()||initial();}catch{state=initial();loadWarning=true;}
-const absent=catchUp(state);let active=state.fish[0]?.id;
+
+// ------------------------------------------------------------------ 本地状态与云栈接线
+const store=createLocalStore(localStorage);
+const config=readCloudConfig(cloudConfig);
+const stack=createCloudStack({config,store,emailRedirectTo:location.origin+location.pathname});
+let accountUI=null;
+
+let state,loadWarning=false,toastTimer;
+{
+  let raw=null,saved=null;
+  try{raw=localStorage.getItem(keys.guest());saved=store.readGuest();}catch{loadWarning=true;}
+  state=saved||initial();
+  if(raw!==null&&!saved)loadWarning=true;
+}
+
+function populate(){runtime=state.fish.map(f=>({id:f.id,x:W*(.2+Math.random()*.6),y:H*(.35+Math.random()*.42),a:Math.random()*Math.PI*2,speed:25+Math.random()*15,phase:Math.random()*6,turn:0}));}
+let active=state.fish[0]?.id;
+
+const engine=createSyncEngine({
+  api:stack.api,
+  store,
+  getState:()=>state,
+  setState:next=>{state=next;populate();refresh();},
+  initialState:()=>initial(),
+  isOnline:()=>navigator.onLine!==false,
+  onStatus:s=>{
+    const label={[STATUS.GUEST]:'本机存档',[STATUS.CLOUD_OFF]:'本机存档',[STATUS.SYNCING]:'同步中…',[STATUS.SYNCED]:'已同步到云端',[STATUS.OFFLINE]:'离线 · 已存本机',[STATUS.ERROR]:'同步失败 · 已存本机',[STATUS.CONFLICT]:'有冲突待处理',[STATUS.SIGNED_OUT]:'登录已失效 · 已存本机'}[s.status]||'本机存档';
+    $('save-status').textContent=label;
+    if(s.message&&s.status!==STATUS.SYNCED&&s.status!==STATUS.SYNCING)toast(s.message);
+    if(accountUI)accountUI.render();
+  },
+  onNotice:message=>toast(message)
+});
+
+// 未登录（游客）时保留原有的本地离线成长；已登录时成长由服务端按时间结算，
+// 避免同一段时间在本地和云端各加一次。见 web/cloud/sync.js 顶部说明。
+const hasSession=Boolean(store.readSession());
+const absent=hasSession?0:catchUp(state);
+
+// ------------------------------------------------------------------ 渲染与交互（沿用首版实现）
 let W=1000,H=480,last=0,runtime=[],foods=[],ripples=[],audioCtx,audioNodes,mutedByVisibility=false;
 const reduceMotion=matchMedia('(prefers-reduced-motion: reduce)').matches;
 function toast(s){$('toast').textContent=s;$('toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('visible'),3300);}
-function save(){state.savedAt=Date.now();try{if(!storage)throw Error();storage.save(state);$('save-status').textContent='已保存到本机';return true;}catch{$('save-status').textContent='未能保存，请导出';return false;}}
-function populate(){runtime=state.fish.map(f=>({id:f.id,x:W*(.2+Math.random()*.6),y:H*(.35+Math.random()*.42),a:Math.random()*Math.PI*2,speed:25+Math.random()*15,phase:Math.random()*6,turn:0}));}
+
+/** 本机落盘：游客写 mofish.v1，登录后交给同步引擎（缓存 + 未同步副本 + 基线）。 */
+let persistedCanonical = canonicalState(state);
+function persistLocal(){
+  if(engine.isCloud){
+    const ok=engine.persistLocal();
+    if(ok)persistedCanonical=canonicalState(state);
+    else $('save-status').textContent='本机缓存暂不可用，请用导出备份';
+    return ok;
+  }
+  const ok=store.writeGuest(state);
+  if(ok)persistedCanonical=canonicalState(state);
+  return ok;
+}
+/** 是否有尚未写进 localStorage 的变化（游客存档不希望在“什么都没做”时被创建）。 */
+function hasLocalChanges(){return canonicalState(state)!==persistedCanonical;}
+function save(){
+  state.savedAt=Date.now();
+  const ok=persistLocal();
+  // 云端写入走 2.5 秒去抖，并且只在内容真的变化时才发请求。
+  if(engine.isCloud)engine.markDirty();
+  if(ok&&!engine.isCloud)$('save-status').textContent='已保存到本机';
+  if(!ok&&!engine.isCloud)$('save-status').textContent='未能保存，请导出';
+  return ok;
+}
+
 function resize(){const rect=canvas.getBoundingClientRect(),oldW=W,oldH=H;W=rect.width;H=rect.height;const dpr=Math.min(devicePixelRatio||1,2);canvas.width=W*dpr;canvas.height=H*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);runtime.forEach(f=>{f.x=f.x/oldW*W;f.y=f.y/oldH*H;});foods=[];}
 new ResizeObserver(resize).observe(canvas);resize();populate();
 function fishSVG(f){const s=SPECIES[f.species];return `<svg aria-hidden="true" viewBox="0 0 70 44"><path d="M53 22 68 9v26Z" fill="${s.accent}"/><path d="M5 22Q27-3 55 22 27 47 5 22Z" fill="${s.color}"/><path d="m28 11 8-7 10 10" fill="${s.accent}"/><circle cx="14" cy="20" r="2" fill="#234744"/></svg>`;}
@@ -60,9 +129,54 @@ function render(ts){if(document.hidden){last=0;requestAnimationFrame(render);ret
  const delta=Math.atan2(Math.sin(desired-r.a),Math.cos(desired-r.a));r.a+=Math.max(-dt*2,Math.min(dt*2,delta));const v=r.speed*(target?1.65:1)*speedScale;r.x+=Math.cos(r.a)*v*dt;r.y+=Math.sin(r.a)*v*dt;r.x=Math.max(15,Math.min(W-15,r.x));r.y=Math.max(55,Math.min(H-50,r.y));drawFish(r,f,t);}
  for(const ripple of ripples){ripple.age+=dt;ctx.strokeStyle=`rgba(211,233,217,${Math.max(0,.35-ripple.age*.25)})`;ctx.lineWidth=1;ctx.beginPath();ctx.ellipse(ripple.x,ripple.y,8+ripple.age*35,3+ripple.age*15,0,0,7);ctx.stroke();}ripples=ripples.filter(r=>r.age<1.4);
  for(let j=0;j<9;j++){const y=H-((t*12+j*51)%H);ctx.strokeStyle='#b8e4d334';ctx.lineWidth=.7;ctx.beginPath();ctx.arc(W*.91+Math.sin(t+j)*5,y,1.5+j%3,0,7);ctx.stroke();}
- const vignette=ctx.createRadialGradient(W*.5,H*.4,H*.1,W*.5,H*.4,W*.7);vignette.addColorStop(0,'#00000000');vignette.addColorStop(1,'#001a2448');ctx.fillStyle=vignette;ctx.fillRect(0,0,W,H);if(eaten)refresh();requestAnimationFrame(render);}
-refresh();save();requestAnimationFrame(render);setInterval(()=>{if(!document.hidden)save();},15000);
-document.addEventListener('visibilitychange',()=>{if(document.hidden){save();mutedByVisibility=audioCtx?.state==='running';if(mutedByVisibility)audioCtx.suspend();}else{const hours=catchUp(state);if(hours>.02)refresh();if(mutedByVisibility)audioCtx?.resume().then(refresh).catch(()=>{});mutedByVisibility=false;}});
-window.addEventListener('pagehide',save);
-if(loadWarning)toast('自动存档暂不可用，或旧存档无法读取；请用导出保留进度。');else if(absent>.1)toast(`欢迎回来！离开的 ${Math.round(absent*10)/10} 小时里，小鱼又长大了一点。`);
+ const vignette=ctx.createRadialGradient(W*.5,H*.4,H*.1,W*.5,H*.4,W*.7);vignette.addColorStop(0,'#00000000');vignette.addColorStop(1,'#001a2448');ctx.fillStyle=vignette;ctx.fillRect(0,0,W,H);if(eaten){refresh();engine.markDirty();}requestAnimationFrame(render);}
+refresh();requestAnimationFrame(render);
+// 15 秒一次只写 localStorage，且只在内容真的变了才写；不发起任何网络请求。
+// 关键：启动时不主动写游客存档——否则一个从没玩过本机模式的访客，会在首次登录时被
+// 误判成「本机已有一份存档」，从而弹出本不必要「保留哪一份」的选择。
+setInterval(()=>{if(!document.hidden&&hasLocalChanges())persistLocal();},15000);
+function refreshCloudProgress(reason){if(engine.isCloud)engine.syncNow({reason}).then(()=>refresh()).catch(()=>{});}
+document.addEventListener('visibilitychange',()=>{if(document.hidden){save();if(engine.isCloud)engine.flush({reason:'hidden',keepalive:true}).catch(()=>{});mutedByVisibility=audioCtx?.state==='running';if(mutedByVisibility)audioCtx.suspend();}else{if(engine.isCloud){refreshCloudProgress('visible');}else{const hours=catchUp(state);if(hours>.02)refresh();}if(mutedByVisibility)audioCtx?.resume().then(refresh).catch(()=>{});mutedByVisibility=false;}});
+// 两个浏览器窗口可能同时可见；重新聚焦也要对账，避免只能手动刷新才能看到另一端进度。
+window.addEventListener('focus',()=>{if(!document.hidden)refreshCloudProgress('focus');});
+window.addEventListener('pagehide',()=>{if(engine.isCloud){persistLocal();engine.flush({reason:'pagehide',keepalive:true}).catch(()=>{});}else save();});
+window.addEventListener('online',()=>{engine.handleOnline();refresh();});
+window.addEventListener('offline',()=>{engine.handleOffline();});
+
+// ------------------------------------------------------------------ 账号界面与邮件回调
+accountUI=createAccountUI({
+  auth:stack.auth,
+  engine,
+  store,
+  config,
+  onSessionChange:()=>{
+    if(!engine.isCloud){
+      const guest=store.readGuest()||initial();
+      catchUp(guest);
+      state=guest;
+      populate();
+    }
+    refresh();
+  }
+});
+
+const callback=parseAuthCallback({hash:location.hash,search:location.search});
+if(callback.kind!=='none'){
+  // 立刻把 token 从地址栏移除，避免留在历史记录、截图或后续请求的 Referer 里。
+  try{history.replaceState(null,'',location.pathname);}catch{}
+  accountUI.handleCallback(callback).catch(()=>toast('链接处理失败，请重新申请邮件。'));
+}
+
+if(config.mode==='ready'&&callback.kind!=='session'){
+  stack.auth.getSession().then(async restored=>{
+    if(restored.ok)await engine.setSession(restored.session);
+    // 过期但凭据仍在（网络/服务端暂时不可用）：以离线方式进入云模式，
+    // 既保留本机缓存与未同步改动，也让下一次联网自动续期（评审 P2-8）。
+    else if(restored.session)await engine.setSession(restored.session);
+    else if(restored.reason==='invalid_grant')accountUI.setNotice('登录状态已失效，请重新登录。','warn');
+  }).catch(()=>{});
+}
+
+if(loadWarning)toast('自动存档暂不可用，或旧存档无法读取；请用导出保留进度。');
+else if(absent>.1)toast(`欢迎回来！离开的 ${Math.round(absent*10)/10} 小时里，小鱼又长大了一点。`);
 if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').then(()=>navigator.serviceWorker.ready).then(()=>{$('offline-status').textContent='离线资源已就绪：下次断网也可以打开鱼缸。';}).catch(()=>{$('offline-status').textContent='当前环境不支持离线缓存，请联网使用。';});else $('offline-status').textContent='此浏览器不支持离线缓存，请联网使用。';
