@@ -161,20 +161,27 @@ async function main() {
     // 让「等待去抖窗口」的断言变成随机失败。
     '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding',
     '--remote-debugging-port=0', `--user-data-dir=${PROFILE}`, 'about:blank'],
-    { stdio: 'ignore', detached: false });
+    { stdio: ['ignore', 'ignore', 'pipe'], detached: false });
+  let startupDiagnostics = '';
+  chrome.stderr.on('data', chunk => {
+    startupDiagnostics = (startupDiagnostics + chunk.toString()).slice(-8000);
+  });
   let spawnError;
   chrome.once('error', error => { spawnError = error; });
   console.log(`本轮临时目录 ${RUN_DIR} · 测试 PID ${process.pid} · Chrome PID ${chrome.pid ?? '启动失败'}`);
   let version = null;
   for (let i = 0; i < 40 && !version; i++) {
     if (spawnError) throw spawnError;
+    if (chrome.exitCode !== null || chrome.signalCode !== null) {
+      throw new Error(`Chrome 启动后退出（${chrome.exitCode ?? chrome.signalCode}）：${startupDiagnostics}`);
+    }
     await sleep(400);
     try {
       DEBUG_PORT = Number(readFileSync(path.join(PROFILE, 'DevToolsActivePort'), 'utf8').split('\n')[0]);
       version = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/version`)).json();
     } catch { /* 还没起来 */ }
   }
-  if (!version) throw new Error(`Chrome 未在 ${DEBUG_PORT} 上启动（headless 调试端口不可达）`);
+  if (!version) throw new Error(`Chrome 调试端口不可达：${startupDiagnostics}`);
 
   // 浏览器级连接（建隔离上下文用）
   const raw = await connect(version.webSocketDebuggerUrl, { pageDomains: false });

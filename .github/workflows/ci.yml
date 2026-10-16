@@ -38,6 +38,9 @@ jobs:
           MOFISH_SUPABASE_ANON_KEY: sb_publishable_ci_fixture
       - name: Browser tests (local fake backend)
         run: npm run test:e2e
+        env:
+          MOFISH_CHROME_PATH: /usr/bin/google-chrome
+          MOFISH_CHROME_NO_SANDBOX: '1'
       - name: Remove owned compatibility runtime
         if: always()
         shell: bash
