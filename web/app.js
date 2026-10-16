@@ -61,7 +61,7 @@ function render(ts){if(document.hidden){last=0;requestAnimationFrame(render);ret
  for(const ripple of ripples){ripple.age+=dt;ctx.strokeStyle=`rgba(211,233,217,${Math.max(0,.35-ripple.age*.25)})`;ctx.lineWidth=1;ctx.beginPath();ctx.ellipse(ripple.x,ripple.y,8+ripple.age*35,3+ripple.age*15,0,0,7);ctx.stroke();}ripples=ripples.filter(r=>r.age<1.4);
  for(let j=0;j<9;j++){const y=H-((t*12+j*51)%H);ctx.strokeStyle='#b8e4d334';ctx.lineWidth=.7;ctx.beginPath();ctx.arc(W*.91+Math.sin(t+j)*5,y,1.5+j%3,0,7);ctx.stroke();}
  const vignette=ctx.createRadialGradient(W*.5,H*.4,H*.1,W*.5,H*.4,W*.7);vignette.addColorStop(0,'#00000000');vignette.addColorStop(1,'#001a2448');ctx.fillStyle=vignette;ctx.fillRect(0,0,W,H);if(eaten)refresh();requestAnimationFrame(render);}
-refresh();save();requestAnimationFrame(render);setInterval(save,15000);
+refresh();save();requestAnimationFrame(render);setInterval(()=>{if(!document.hidden)save();},15000);
 document.addEventListener('visibilitychange',()=>{if(document.hidden){save();mutedByVisibility=audioCtx?.state==='running';if(mutedByVisibility)audioCtx.suspend();}else{const hours=catchUp(state);if(hours>.02)refresh();if(mutedByVisibility)audioCtx?.resume().then(refresh).catch(()=>{});mutedByVisibility=false;}});
 window.addEventListener('pagehide',save);
 if(loadWarning)toast('自动存档暂不可用，或旧存档无法读取；请用导出保留进度。');else if(absent>.1)toast(`欢迎回来！离开的 ${Math.round(absent*10)/10} 小时里，小鱼又长大了一点。`);
