@@ -22,3 +22,9 @@ GitHub: https://github.com/Mintzz666/MoFish
 `npm start`: local preview. `npm test`: model tests. `npm run build`: static output in dist/.
 
 Keep MoFish as the product title. Preserve local-first operation; cloud synchronization has not been implemented.
+
+## Hermes / Codex handoff
+
+Read `docs/HERMES-COLLABORATION.md` and `docs/HANDOFF.md` when working on a Hermes development task or reviewing its results. Hermes uses a separate `hermes/<task>` branch and updates the handoff with actual verification evidence. Ordinary development branch pushes are not releases. Do not merge main, tag a product version or deploy during a routine handoff.
+
+When the user asks Codex to assess Hermes's current work, default to read-only review of the specified GitHub branch/commit. Fetch it without overwriting existing local changes; use an isolated checkout/worktree when needed. Report findings and recommendations; modify code only if requested. Record the exact reviewed SHA because an unpushed local Hermes workspace cannot be read here.
