@@ -16,6 +16,7 @@ export const keys = {
   accountState: (userId, aquariumId) => `${NAMESPACE}.state.${userId}.${aquariumId}`,
   pending: (userId, aquariumId) => `${NAMESPACE}.pending.${userId}.${aquariumId}`,
   meta: (userId, aquariumId) => `${NAMESPACE}.meta.${userId}.${aquariumId}`,
+  feeds: (userId, aquariumId) => `${NAMESPACE}.feeds.${userId}.${aquariumId}`,
   backup: (userId, aquariumId, stamp) => `${NAMESPACE}.backup.${userId}.${aquariumId}.${stamp}`,
   prefixForUser: (userId) => `${NAMESPACE}.state.${userId}.`
 };
@@ -41,7 +42,7 @@ function validateOrNull(value) {
 /** 该账号派生出的全部本地键（state / pending / meta / backup / current）。 */
 function userKeyMatcher(userId) {
   const escaped = String(userId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^${NAMESPACE}\\.(state|pending|meta|backup)\\.${escaped}\\.|^${NAMESPACE}\\.current\\.${escaped}$`);
+  return new RegExp(`^${NAMESPACE}\\.(state|pending|meta|backup|feeds)\\.${escaped}\\.|^${NAMESPACE}\\.current\\.${escaped}$`);
 }
 
 export function createLocalStore(storage) {
@@ -102,6 +103,26 @@ export function createLocalStore(storage) {
       }));
     },
     clearPending: (userId, aquariumId) => del(keys.pending(userId, aquariumId)),
+
+    /**
+     * 未提交的进食事件（严格单人：每条鱼吃到一口就是一条记录，带唯一 operation_id）。
+     * 离线时先落盘，重连后按顺序重试；服务端按 operation_id 去重，因此重试不会重复奖励。
+     */
+    readFeeds(userId, aquariumId) {
+      const parsed = safeParse(get(keys.feeds(userId, aquariumId)));
+      if (!parsed || !Array.isArray(parsed.items)) return [];
+      return parsed.items
+        .filter((item) => item && typeof item.op === 'string' && typeof item.fishId === 'string' && Number.isFinite(item.bites))
+        .map((item) => ({ op: item.op, fishId: item.fishId, bites: Math.max(1, Math.min(8, Math.floor(item.bites))), at: Number(item.at) || 0 }))
+        .slice(-200);
+    },
+    writeFeeds(userId, aquariumId, items) {
+      if (!Array.isArray(items) || items.length === 0) {
+        return del(keys.feeds(userId, aquariumId));
+      }
+      return set(keys.feeds(userId, aquariumId), JSON.stringify({ v: 1, items: items.slice(-200) }));
+    },
+    clearFeeds: (userId, aquariumId) => del(keys.feeds(userId, aquariumId)),
 
     readMeta: (userId, aquariumId) => safeParse(get(keys.meta(userId, aquariumId))),
     writeMeta: (userId, aquariumId, meta) => set(keys.meta(userId, aquariumId), JSON.stringify(meta)),

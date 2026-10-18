@@ -125,6 +125,18 @@ async function connect(wsUrl, { pageDomains = true } = {}) {
   return page;
 }
 
+/** 轮询等待页面条件成立（软件渲染下 3D 初始化可能占用数秒主线程）。 */
+async function waitFor(page, expression, { timeoutMs = 15000, intervalMs = 250 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    try { last = await page.evaluate(expression); } catch { last = null; }
+    if (last) return last;
+    await sleep(intervalMs);
+  }
+  return last;
+}
+
 async function newContextPage(browserWs, label) {
   const { browserContextId } = await browserWs.send('Target.createBrowserContext', { disposeOnDetach: false });
   const { targetId } = await browserWs.send('Target.createTarget', { url: 'about:blank', browserContextId });
@@ -155,7 +167,7 @@ async function main() {
   console.log(`预览 ${preview.url} · 假后端 ${fakeServer.url} · _headers 规则 ${preview.rules.length} 条`);
 
   // 2) 每轮独立 profile 与由浏览器分配的端口，避免两轮测试互相删除文件或连接到旧进程。
-  chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--hide-scrollbars',
+  chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--hide-scrollbars', '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader',
     ...(process.env.MOFISH_CHROME_NO_SANDBOX === '1' ? ['--no-sandbox'] : []),
     // 自动化下必须关掉后台节流，否则隐藏页面的 setTimeout（去抖写入）会被推迟到 3 秒以上，
     // 让「等待去抖窗口」的断言变成随机失败。
@@ -238,6 +250,8 @@ async function main() {
   // ---- 场景 3：改名 → 去抖写入 ----
   const savesBefore = fakeServer.requests.filter(r => r.path.includes('save_aquarium')).length;
   await deviceA.click('.fish-card');
+  await deviceA.click('#detail-rename');   // 新界面：点卡片先选中，再点“改名”打开对话框
+  await sleep(160);
   await deviceA.evaluate(`document.getElementById('fish-name').value='阿花'`);
   await deviceA.click('#rename');
   const pendingChip = await deviceA.evaluate(`document.getElementById('cloud-status').textContent`);
@@ -263,7 +277,7 @@ async function main() {
   await deviceB.type('#auth-email', 'alice@example.com');
   await deviceB.type('#auth-password', 'goodpassword123');
   await deviceB.click('#auth-sign-in');
-  await sleep(1400);
+  await sleep(3000);
   const nameOnB = await deviceB.evaluate(`document.querySelector('.fish-card b').textContent`);
   const chipOnB = await deviceB.evaluate(`document.getElementById('cloud-status').textContent`);
   check('设备 B 登录后恢复云端鱼名', nameOnB === '阿花', `B 显示=${nameOnB}`);
@@ -275,12 +289,16 @@ async function main() {
   await deviceB.send('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
   await deviceA.front();
   await deviceA.click('.fish-card');
+  await deviceA.click('#detail-rename');   // 新界面：点卡片先选中，再点“改名”打开对话框
+  await sleep(160);
   await deviceA.evaluate(`document.getElementById('fish-name').value='A 改的'`);
   await deviceA.click('#rename');
   await sleep(3200);
 
   await deviceB.front();
   await deviceB.click('.fish-card');
+  await deviceB.click('#detail-rename');   // 新界面：点卡片先选中，再点“改名”打开对话框
+  await sleep(160);
   await deviceB.evaluate(`document.getElementById('fish-name').value='B 改的'`);
   await deviceB.click('#rename');
   await deviceB.send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
@@ -364,7 +382,9 @@ async function main() {
   // 真实用户点邮件链接一定是新开文档，这里用查询参数强制一次真实导航来保持一致。
   const verifyUrl = `${preview.url}/?mail=verify#access_token=${carolSession.access_token}&refresh_token=${carolSession.refresh_token}&type=signup&expires_in=3600`;
   await deviceD.goto(verifyUrl);
-  await sleep(1800);
+  // 3D 初始化在软件渲染下可能占用数秒主线程；轮询等待回调真正完成。
+  await waitFor(deviceD, `document.getElementById('cloud-status').textContent !== '游客'`);
+  await sleep(300);
 
   const dChip = await deviceD.evaluate(`document.getElementById('cloud-status').textContent`);
   const dDialogOpen = await deviceD.evaluate(`document.getElementById('account-dialog').open`);
@@ -381,7 +401,8 @@ async function main() {
   const carolSession2 = fake.issueSession(carol);
   const recoveryUrl = `${preview.url}/?mail=recovery#access_token=${carolSession2.access_token}&refresh_token=${carolSession2.refresh_token}&type=recovery&expires_in=3600`;
   await deviceD.goto(recoveryUrl);
-  await sleep(1800);
+  await waitFor(deviceD, `!document.getElementById('reset-panel').hidden`);
+  await sleep(300);
 
   const resetVisible = await deviceD.evaluate(`!document.getElementById('reset-panel').hidden`);
   const sessionHidden = await deviceD.evaluate(`document.getElementById('session-panel').hidden`);
@@ -423,6 +444,8 @@ async function main() {
   await deviceC.front();
   await deviceC.send('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
   await deviceC.click('.fish-card');
+  await deviceC.click('#detail-rename');   // 新界面：点卡片先选中，再点“改名”打开对话框
+  await sleep(160);
   await deviceC.evaluate(`document.getElementById('fish-name').value='离线改的名字'`);
   await deviceC.click('#rename');
   await sleep(3600);   // 等过离线状态下的去抖写入尝试
@@ -455,7 +478,7 @@ async function main() {
   await deviceC.evaluate(`document.getElementById('session-sync-now')?.click()`);
   await sleep(1500);
   const afterSecond = [...fake.aquariums.values()][0].state.fish[0].growth;
-  check('服务端结算 1 小时成长（+0.008）', Math.abs(afterGrowth - (beforeGrowth + 0.008)) < 1e-6, `${beforeGrowth} → ${afterGrowth}`);
+  check('服务端结算 1 小时成长（v2：+0.002083）', Math.abs(afterGrowth - (beforeGrowth + 0.05 / 24)) < 1e-6, `${beforeGrowth} → ${afterGrowth}`);
   check('重复同步不会重复奖励', afterSecond === afterGrowth, `${afterGrowth} → ${afterSecond}`);
 
   // 模拟另一端已提交的新版本：可见窗口重新获得焦点时应拉回，无需重新登录。
@@ -501,7 +524,7 @@ async function main() {
     await deviceC.setViewport(w, h, true);
     await deviceC.goto(preview.url + '/');
     await sleep(900);
-    const layout = JSON.parse(await deviceC.evaluate(`JSON.stringify({scrollW:document.documentElement.scrollWidth,inner:innerWidth,chip:document.getElementById('cloud-status').textContent,headerRight:document.querySelector('.header-right').getBoundingClientRect().right})`));
+    const layout = JSON.parse(await deviceC.evaluate(`JSON.stringify({scrollW:document.documentElement.scrollWidth,inner:innerWidth,chip:document.getElementById('cloud-status').textContent,headerRight:document.querySelector('.topbar-right').getBoundingClientRect().right})`));
     check(`${w}px 无横向溢出`, layout.scrollW <= layout.inner, JSON.stringify(layout));
     await deviceC.click('#account-button');
     const dialogFits = JSON.parse(await deviceC.evaluate(`(()=>{const r=document.getElementById('account-dialog').getBoundingClientRect();return JSON.stringify({l:r.left,r:r.right,w:r.width,scrollW:document.documentElement.scrollWidth,inner:innerWidth,open:document.getElementById('account-dialog').open})})()`));
@@ -510,6 +533,99 @@ async function main() {
     await deviceC.evaluate(`document.getElementById('account-dialog').close()`);
     await deviceC.shot(`${name}-tank.png`);
   }
+
+  // ---- 场景 11：阶段 B 单人体验（3D / 布景编辑 / 2D 降级 / 四阶段）----
+  const devicePhaseB = await newContextPage(browserWs, 'E');
+  await devicePhaseB.setViewport(1440, 900, false);
+  await devicePhaseB.goto(preview.url + '/');
+
+  // 预置四条不同成长阶段的鱼（加速时钟只用于测试；正式玩家没有这样的入口）
+  // 用 addScriptToEvaluateOnNewDocument 在应用启动前写入，避免上一页 pagehide 的自动保存覆盖种子。
+  const seeded = {
+    version: 2,
+    fish: [0.02, 0.22, 0.55, 0.9].map((g, i) => ({
+      id: `stage-${i}`, name: `阶段鱼${i}`, species: ['sunset', 'mint', 'moon', 'fan'][i],
+      born: Date.now() - 30 * 86400000, growth: g, meals: 10, look: { v: 1, seed: 900 + i }
+    })),
+    decor: [], layout: { v: 1, seed: 7 }, night: false, sound: false, savedAt: Date.now()
+  };
+  await devicePhaseB.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `localStorage.setItem('mofish.v1', ${JSON.stringify(JSON.stringify(seeded))});`
+  });
+  await devicePhaseB.goto(preview.url + '/');
+  await waitFor(devicePhaseB, 'Boolean(window.__mofish)');
+  await waitFor(devicePhaseB, `window.__mofish.renderer === '3d'`);
+  await sleep(400);
+  check('阶段 B：存档为 v2', (await devicePhaseB.evaluate('window.__mofish?.version')) === 2);
+  check('阶段 B：默认使用 3D 渲染', (await devicePhaseB.evaluate('window.__mofish?.renderer')) === '3d');
+
+  const stageLabels = [];
+  for (let i = 0; i < 4; i += 1) {
+    await devicePhaseB.evaluate(`document.querySelectorAll('.fish-card')[${i}].click()`);
+    await sleep(120);
+    stageLabels.push(await devicePhaseB.evaluate(`document.getElementById('detail-type').textContent`));
+  }
+  check('四阶段在界面上可辨认', ['鱼苗期', '幼鱼期', '亚成年期', '成年期'].every((n, i) => stageLabels[i].includes(n)),
+    stageLabels.join(' / '));
+
+  // 布景编辑：新增石头 → 转向 → 换造型 → 撤销 → 确认
+  await devicePhaseB.click('#mode-decor');
+  check('可以进入布景模式', (await devicePhaseB.evaluate('window.__mofish?.editMode')) === 'decor');
+  const decorBefore = await devicePhaseB.evaluate('window.__mofish.state.decor.length');
+  await devicePhaseB.click('#add-rock');
+  const decorAfter = await devicePhaseB.evaluate('window.__mofish.state.decor.length');
+  check('新增造景进入场景并等待确认', decorAfter === decorBefore + 1 && (await devicePhaseB.evaluate('!document.getElementById("decor-pending-actions").hidden')));
+  const rotBefore = await devicePhaseB.evaluate('window.__mofish.state.decor[0]?.rot');
+  await devicePhaseB.click('#decor-rotate');
+  const rotAfter = await devicePhaseB.evaluate('window.__mofish.state.decor[0]?.rot');
+  check('旋转按钮改变角度', Math.abs(rotAfter - rotBefore) > 0.01);
+  const seedBefore = await devicePhaseB.evaluate('window.__mofish.state.decor[0]?.seed');
+  await devicePhaseB.click('#decor-reshuffle');
+  const seedAfter = await devicePhaseB.evaluate('window.__mofish.state.decor[0]?.seed');
+  check('换个造型只改 seed', seedBefore !== seedAfter);
+  await devicePhaseB.click('#decor-confirm');
+  // 撤销一次回到「换造型」之前（seed 恢复），再撤销一次回到「旋转」之前（角度恢复）
+  await devicePhaseB.click('#decor-undo');
+  check('撤销恢复上一个造型', (await devicePhaseB.evaluate('window.__mofish.state.decor[0]?.seed')) === seedBefore);
+  await devicePhaseB.click('#decor-undo');
+  check('再撤销一次回到旋转前', Math.abs((await devicePhaseB.evaluate('window.__mofish.state.decor[0]?.rot')) - rotBefore) < 1e-6);
+  const savedDecor = await devicePhaseB.evaluate(`JSON.parse(localStorage.getItem('mofish.v1')).decor.length`);
+  check('布景改动写入本机存档', savedDecor === decorAfter, `存档=${savedDecor}`);
+
+  // 2D 降级与画质
+  await devicePhaseB.click('#toggle-2d');
+  await sleep(900);
+  check('可以切到 2D 降级渲染', (await devicePhaseB.evaluate('window.__mofish?.renderer')) === '2d');
+  check('2D 下布景编辑按钮被禁用（避免误操作）', await devicePhaseB.evaluate('document.getElementById("mode-decor").disabled'));
+  await devicePhaseB.shot('07-2d-fallback.png');
+  await devicePhaseB.click('#toggle-2d');
+  await sleep(1200);
+  check('可以切回 3D', (await devicePhaseB.evaluate('window.__mofish?.renderer')) === '3d');
+  await devicePhaseB.evaluate(`(()=>{const q=document.getElementById('quality');q.value='low';q.dispatchEvent(new Event('change'));return q.value;})()`);
+  await sleep(1600);
+  check('可以切到低画质且不报错', (await devicePhaseB.evaluate('window.__mofish?.quality')) === 'low');
+  await devicePhaseB.evaluate(`(()=>{const q=document.getElementById('quality');q.value='high';q.dispatchEvent(new Event('change'));return q.value;})()`);
+  await sleep(1600);
+
+  // 夜间
+  await devicePhaseB.click('#night');
+  check('夜间模式写入存档', (await devicePhaseB.evaluate('window.__mofish.state.night')) === true);
+  await devicePhaseB.click('#night');
+
+  // 喂食：鱼真的吃到才算成长（游客模式本机记账）
+  const mealsBefore = await devicePhaseB.evaluate('window.__mofish.state.fish.reduce((s,f)=>s+f.meals,0)');
+  await devicePhaseB.click('#feed');
+  const feedDeadline = Date.now() + 12000;
+  let mealsAfter = mealsBefore;
+  while (mealsAfter === mealsBefore && Date.now() < feedDeadline) {
+    await sleep(400);
+    mealsAfter = await devicePhaseB.evaluate('window.__mofish.state.fish.reduce((s,f)=>s+f.meals,0)');
+  }
+  check('小鱼吃到食物后才记进食', mealsAfter > mealsBefore, `${mealsBefore} → ${mealsAfter}`);
+  await devicePhaseB.shot('08-desktop-phase-b.png');
+
+  const phaseBErrors = devicePhaseB.errors().filter(e => !/Failed to load resource/.test(e));
+  check('阶段 B 没有前端异常', phaseBErrors.length === 0, phaseBErrors.slice(0, 3).join(' | '));
 
   // 汇总
   const failed = results.filter(r => !r.ok);

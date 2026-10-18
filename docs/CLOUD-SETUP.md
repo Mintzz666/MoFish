@@ -52,7 +52,12 @@ Cloudflare 可复用 Tibo 所用账号，为 MoFish 建独立 Worker `mofish`，
 `83736e39e57690a501a5cd9b4fe7dcc883f9254357519ba7e6b8009f78ca8b41`。
 本地版本与云端迁移历史已对齐；已应用的 SQL 保持只读，后续变更新增迁移。
 
-需要为另一个全新项目部署时，先确认目标项目，再按文件名顺序应用这两份迁移；推荐通过 CLI
+阶段 B 新增第三份迁移 `20261018120000_phase_b_growth_and_aquascaping.sql`（v2 存档校验、四阶段结算、
+进食记账表 `mofish_feed_events` 与 `record_feeding`）。**它还没有应用到任何项目**。
+升级顺序必须是：先在目标项目应用这份迁移，再部署 v2 前端；顺序反了会拒绝 v2 写入（客户端保留本机副本，不丢档）。
+回滚见 `supabase/rollback/0002_phase_b_growth.down.sql`。
+
+需要为另一个全新项目部署时，先确认目标项目，再按文件名顺序应用这些迁移；推荐通过 CLI
 记录迁移历史（不要对当前项目重新初始化）：
 
 ```sh

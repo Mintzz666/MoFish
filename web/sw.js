@@ -4,10 +4,9 @@
 // - 只缓存本站同源的静态资源；跨源请求（Supabase Auth / PostgREST）直接放行、绝不进缓存。
 // - 只处理 GET；POST/PUT 等写操作从不经过这里。
 // - 云端私有数据一律不缓存：即使将来 API 变成同源，也要先把它从 FILES 与本分支里排除。
-const CACHE = 'mofish-static-v2';
-const FILES = ['./', './index.html', './style.css', './app.js', './model.js', './storage.js', './config.js',
-  './cloud/config.js', './cloud/auth.js', './cloud/api.js', './cloud/client.js', './cloud/sync.js',
-  './ui/account.js', './icon.svg', './manifest.webmanifest'];
+const CACHE = 'mofish-static-v3';
+// 只列发布产物：app.js 由 build.mjs 打包（含 three 与认证 SDK），源码模块不单独上线。
+const FILES = ['./', './index.html', './style.css', './app.js', './config.js', './icon.svg', './manifest.webmanifest'];
 
 self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(FILES))));
 

@@ -17,11 +17,10 @@ const url = (process.env.MOFISH_SUPABASE_URL || '').trim();
 const anonKey = (process.env.MOFISH_SUPABASE_ANON_KEY || '').trim();
 
 function configModule(values) {
+  // 运行时配置：app.js 是打包产物，不能把 config.js 静态内联进去，否则部署时改配置无效。
   return `// 由 build.mjs 在构建时生成，请勿手工修改。
 // 这里只允许出现项目 URL 与公开 key；service_role / secret 等管理密钥永不进入前端。
-const cloudConfig = ${JSON.stringify(values, null, 2)};
-
-export default cloudConfig;
+globalThis.__MOFISH_CONFIG__ = ${JSON.stringify(values, null, 2)};
 `;
 }
 
@@ -46,16 +45,21 @@ if (url || anonKey) {
 
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist', { recursive: true });
-await cp('web', 'dist', { recursive: true });
+// 只复制真正需要发布的静态文件；JS 由 esbuild 打包（含 three 与认证 SDK），不再暴露源码模块。
+const STATIC_FILES = ['index.html', 'style.css', 'icon.svg', 'manifest.webmanifest', '_headers', 'sw.js', 'config.js'];
+for (const file of STATIC_FILES) {
+  await cp(`web/${file}`, `dist/${file}`);
+}
 await build({
-  entryPoints: ['web/cloud/auth.js'],
-  outfile: 'dist/cloud/auth.js',
+  entryPoints: ['web/app.js'],
+  outfile: 'dist/app.js',
   bundle: true,
   platform: 'browser',
   format: 'esm',
   target: ['es2022'],
   minify: true,
-  legalComments: 'none'
+  legalComments: 'none',
+  loader: { '.glsl': 'text' }
 });
 
 if (resolved) {

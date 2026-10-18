@@ -7,9 +7,4 @@
 // 只允许放这两项公开信息：
 //   supabaseUrl    —— 项目地址，例如 https://abcdefghijklmnop.supabase.co
 //   supabaseAnonKey—— anon（或 sb_publishable_…）公开 key，受 RLS 保护
-const cloudConfig = {
-  supabaseUrl: '',
-  supabaseAnonKey: ''
-};
-
-export default cloudConfig;
+globalThis.__MOFISH_CONFIG__ = globalThis.__MOFISH_CONFIG__ || { supabaseUrl: '', supabaseAnonKey: '' };

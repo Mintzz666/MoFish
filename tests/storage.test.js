@@ -126,6 +126,36 @@ test('forgetUser 只清除该账号派生键，游客存档与其它账号不受
   assert.equal(store.readCurrent(ALICE), null);
 });
 
+test('未提交的进食事件按账号+鱼缸隔离，可反复落盘与清理', () => {
+  const raw = createMemoryStorage();
+  const store = createLocalStore(raw);
+  assert.deepEqual(store.readFeeds(ALICE, AQUARIUM_A), []);
+
+  const items = [
+    { op: 'op-1', fishId: 'fish-a', bites: 1, at: 1000 },
+    { op: 'op-2', fishId: 'fish-b', bites: 2, at: 2000 }
+  ];
+  assert.equal(store.writeFeeds(ALICE, AQUARIUM_A, items), true);
+  assert.equal(store.readFeeds(ALICE, AQUARIUM_A).length, 2);
+  assert.deepEqual(store.readFeeds(BOB, AQUARIUM_A), [], '别的账号读不到');
+  assert.deepEqual(store.readFeeds(ALICE, AQUARIUM_B), [], '别的鱼缸读不到');
+
+  // 坏数据不会让读取崩掉：只保留合法条目
+  raw.setItem(keys.feeds(ALICE, AQUARIUM_A), JSON.stringify({ v: 1, items: [{ op: 1 }, items[0]] }));
+  const tolerant = store.readFeeds(ALICE, AQUARIUM_A);
+  assert.equal(tolerant.length, 1);
+  assert.equal(tolerant[0].op, 'op-1');
+
+  // 清空会删除键，而不是留一个空数组
+  store.writeFeeds(ALICE, AQUARIUM_A, []);
+  assert.equal(raw.getItem(keys.feeds(ALICE, AQUARIUM_A)), null);
+
+  store.writeFeeds(ALICE, AQUARIUM_A, items);
+  assert.ok(raw.rawKeys().includes(keys.feeds(ALICE, AQUARIUM_A)));
+  store.forgetUser(ALICE);
+  assert.ok(!raw.rawKeys().includes(keys.feeds(ALICE, AQUARIUM_A)), '清除本机该账号缓存时一并清掉进食队列');
+});
+
 test('storage 抛异常（隐私模式配额）时返回 false 而不是崩掉', () => {
   const hostile = {
     getItem() { throw new Error('blocked'); },

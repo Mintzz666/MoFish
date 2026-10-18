@@ -8,7 +8,8 @@
 const RPC_PATHS = {
   ensureAquarium: '/rest/v1/rpc/ensure_aquarium',
   saveAquarium: '/rest/v1/rpc/save_aquarium',
-  settleGrowth: '/rest/v1/rpc/settle_growth'
+  settleGrowth: '/rest/v1/rpc/settle_growth',
+  recordFeeding: '/rest/v1/rpc/record_feeding'
 };
 
 const FAILURES = {
@@ -47,6 +48,8 @@ export function interpretRpcRow(row) {
       kind: 'ok',
       revision: row.revision == null ? null : Number(row.revision),
       creditedSeconds: row.credited_seconds == null ? 0 : Number(row.credited_seconds),
+      creditedBites: row.credited == null ? 0 : Number(row.credited),
+      duplicate: row.duplicate === true,
       state: row.state_json ?? null,
       lastGrowthAt: row.last_growth_at ?? null,
       aquariumId: row.aquarium_id ?? null,
@@ -171,6 +174,20 @@ export function createCloudApi({
     /** 服务端时间结算离线成长；重复调用不重复奖励。 */
     async settleGrowth(aquariumId, capSeconds = 86400) {
       return rpc('settleGrowth', { p_id: aquariumId, p_cap_seconds: capSeconds });
+    },
+
+    /**
+     * 进食记账（可重试去重）：每次「鱼真的吃到一口」用一个唯一 operation_id 提交。
+     * 服务端只记录事件，不直接改 growth —— 营养成长在 settle_growth 里统一结算，
+     * 因此重复提交不会重复奖励，断网重连后重试也安全。
+     */
+    async recordFeeding(aquariumId, operationId, fishId, bites = 1) {
+      return rpc('recordFeeding', {
+        p_id: aquariumId,
+        p_operation_id: operationId,
+        p_fish_id: fishId,
+        p_bites: bites
+      });
     }
   };
 }

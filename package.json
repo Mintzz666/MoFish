@@ -23,7 +23,8 @@
     "pg": "^8.23.1"
   },
   "dependencies": {
-    "@supabase/auth-js": "^2.118.0"
+    "@supabase/auth-js": "^2.118.0",
+    "three": "^0.180.0"
   },
   "optionalDependencies": {
     "embedded-postgres": "^18.4.0-beta.17"

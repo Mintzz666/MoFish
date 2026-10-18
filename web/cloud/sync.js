@@ -97,6 +97,10 @@ export function createSyncEngine({
   let queued = false;
   let settling = false;
   let settlePromise = null;
+  // 未提交的进食事件：严格单人，每条鱼吃到一口算一条，带唯一 operation_id 去重。
+  let feedQueue = [];
+  let feedTimer = null;
+  let pushingFeeds = null;
   const hydrationCounts = new Map();
   const hydrationPromises = new Map();
   let settleToken = 0;
@@ -119,8 +123,9 @@ export function createSyncEngine({
       revision: baseRevision,
       baseRevision,
       dirty: isDirty(),
-      busy: Boolean(inFlight || settling || (hydrationCounts.get(generation) || 0) > 0 || (status === STATUS.SYNCING && timer === null)),
+      busy: Boolean(inFlight || settling || pushingFeeds || (hydrationCounts.get(generation) || 0) > 0 || (status === STATUS.SYNCING && timer === null)),
       lastGrowthAt,
+      pendingFeeds: feedQueue.length,
       conflict: conflict ? { reason: conflict.reason, cloudRevision: conflict.cloudRevision } : null
     };
   }
@@ -190,10 +195,97 @@ export function createSyncEngine({
     const state = getState();
     store.writeAccountState(uid, aquariumId, state);
     store.writeCurrent(uid, { aquariumId, revision: baseRevision, lastGrowthAt });
+    store.writeFeeds(uid, aquariumId, feedQueue);
     if (conflict) store.writePending(uid, aquariumId, state, conflict.baseRevision ?? baseRevision);
     else if (isDirty()) store.writePending(uid, aquariumId, state, baseRevision);
     else store.clearPending(uid, aquariumId);
     return true;
+  }
+
+  // ------------------------------------------------------------------ 进食记账
+  function loadFeeds() {
+    const uid = userId();
+    feedQueue = uid && aquariumId ? store.readFeeds(uid, aquariumId) : [];
+  }
+
+  function persistFeeds() {
+    const uid = userId();
+    if (!uid || !aquariumId) return;
+    store.writeFeeds(uid, aquariumId, feedQueue);
+  }
+
+  function clearFeedTimer() {
+    if (feedTimer !== null) { clearTimeoutFn(feedTimer); feedTimer = null; }
+  }
+
+  function scheduleFeeds() {
+    clearFeedTimer();
+    const gen = generation;
+    feedTimer = setTimeoutFn(() => { feedTimer = null; return syncNow({ reason: 'feeding', gen }); }, debounceMs);
+  }
+
+  /**
+   * 鱼真的吃到一口时调用（不是点击喂食按钮的次数）。
+   * 已登录时：本机只入队并落盘，成长与 meals 由服务端结算（客户端不重复加，避免双记）。
+   * 游客时：调用方直接用 model.eat。
+   */
+  function queueFeed(fishId, bites = 1) {
+    if (disposed) return { ok: false, skipped: 'disposed' };
+    if (mode !== 'cloud' || !aquariumId) return { ok: false, skipped: 'guest' };
+    if (conflict) return { ok: false, skipped: 'conflict' };
+    const op = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
+      ? globalThis.crypto.randomUUID()
+      : `op-${now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    feedQueue.push({ op, fishId: String(fishId).slice(0, 100), bites: Math.max(1, Math.min(8, Math.floor(bites) || 1)), at: now() });
+    if (feedQueue.length > 200) feedQueue = feedQueue.slice(-200);
+    persistFeeds();
+    if (!isOnline()) {
+      setStatus(STATUS.OFFLINE);
+      return { ok: true, queued: true, offline: true, pending: feedQueue.length };
+    }
+    scheduleFeeds();
+    setStatus(STATUS.SYNCING);
+    return { ok: true, queued: true, pending: feedQueue.length };
+  }
+
+  /** 把未提交的进食事件按顺序提交；服务端按 operation_id 去重，重试安全。 */
+  function pushFeeds(gen = generation) {
+    if (!feedQueue.length) return Promise.resolve({ ok: true, sent: 0 });
+    if (pushingFeeds) return pushingFeeds;
+    if (!aquariumId || !isOnline()) return Promise.resolve({ ok: false, skipped: 'offline' });
+    const batch = feedQueue.slice(0, 24);
+    const operation = (async () => {
+      let sent = 0;
+      for (const item of batch) {
+        const res = await api.recordFeeding(aquariumId, item.op, item.fishId, item.bites);
+        if (stale(gen)) return { ok: false, skipped: 'stale' };
+        if (res.ok) {
+          feedQueue = feedQueue.filter((f) => f.op !== item.op);
+          sent += 1;
+          continue;
+        }
+        const result = res.result || {};
+        if (result.kind === 'unauthenticated' || result.kind === 'forbidden') {
+          persistFeeds();
+          setStatus(STATUS.SIGNED_OUT, result.message || '');
+          return { ok: false, result };
+        }
+        if (result.kind === 'invalid_argument' || result.kind === 'invalid_state') {
+          // 例如鱼已经不在这缸里：丢掉这条事件，不让一条坏记录卡住整个队列。
+          feedQueue = feedQueue.filter((f) => f.op !== item.op);
+          persistFeeds();
+          notify(result.message || '有一条进食记录无法确认，已跳过。');
+          continue;
+        }
+        persistFeeds();
+        setStatus(isOnline() ? STATUS.ERROR : STATUS.OFFLINE, result.message || '');
+        return { ok: false, result, retryable: true };
+      }
+      persistFeeds();
+      return { ok: true, sent };
+    })().finally(() => { pushingFeeds = null; });
+    pushingFeeds = operation;
+    return operation;
   }
 
   async function setSession(nextSession) {
@@ -203,6 +295,8 @@ export function createSyncEngine({
     hydrationCounts.clear();
     hydrationPromises.clear();
     clearSaveTimer();
+    clearFeedTimer();
+    feedQueue = [];
     inFlight = null; queued = false; conflict = null;
     settleToken += 1; settling = false; settlePromise = null;
     session = nextSession && nextSession.user && nextSession.user.id ? nextSession : null;
@@ -290,6 +384,7 @@ export function createSyncEngine({
         store.writeCurrent(uid, { aquariumId, revision: baseRevision, lastGrowthAt });
         store.writePending(uid, aquariumId, fallback, baseRevision);
       }
+      loadFeeds();
       setStatus(isOnline() ? STATUS.ERROR : STATUS.OFFLINE, result.message || '');
       return { ok: false, result, offline: true };
     }
@@ -298,6 +393,7 @@ export function createSyncEngine({
     baseRevision = ensured.result.revision;
     lastGrowthAt = ensured.result.lastGrowthAt || null;
     store.writeCurrent(uid, { aquariumId, revision: baseRevision, lastGrowthAt });
+    loadFeeds();
 
     const cloudParsed = validate(ensured.result.state);
     const cloudRevision = ensured.result.revision;
@@ -501,6 +597,15 @@ export function createSyncEngine({
     if (settling) { queued = true; return { ok: true, skipped: 'settling' }; }
     if (inFlight) { queued = true; return inFlight; }
 
+    // 先把「已经吃到嘴里」的进食事件补交（幂等）。失败不阻塞存档写入：
+    // 事件仍留在本机队列里，下次同步会重试。
+    if (feedQueue.length && isOnline()) {
+      const pushed = await pushFeeds(gen);
+      if (stale(gen)) return { ok: false, skipped: 'stale' };
+      const kind = pushed.result?.kind;
+      if (kind === 'unauthenticated' || kind === 'forbidden') return { ok: false, result: pushed.result, reason };
+    }
+
     const state = cloneState(getState());
     const canonical = canonicalState(state);
     if (baseCanonical !== null && canonical === baseCanonical) return { ok: true, skipped: 'unchanged' };
@@ -665,11 +770,10 @@ export function createSyncEngine({
    * 早期实现先结算、把结算返回的最新 revision 当成写入基线，于是「另一台设备已经提交的改名」
    * 会被本机的旧快照覆盖，而且界面还显示「已同步」。
    */
-  async function syncNow({ reason = 'manual' } = {}) {
+  async function syncNow({ reason = 'manual', gen = generation } = {}) {
     if (disposed) return { ok: false, skipped: 'disposed' };
     if (mode !== 'cloud') return { ok: true, skipped: 'guest' };
     if (conflict) return { ok: false, skipped: 'conflict' };
-    const gen = generation;
     const hydration = hydrationPromises.get(gen);
     if (hydration) return hydration;
     if (!aquariumId || baseRevision === null || baseCanonical === null) return hydrate({ gen });
@@ -678,6 +782,14 @@ export function createSyncEngine({
       const res = await inFlight;
       if (stale(gen)) return { ok: false, skipped: 'stale' };
       if (!res.ok) return res;
+    }
+
+    // 进食事件优先补交：服务端在 settle 里统一结算营养成长（幂等、可重试）。
+    if (feedQueue.length && isOnline()) {
+      const pushed = await pushFeeds(gen);
+      if (stale(gen)) return { ok: false, skipped: 'stale' };
+      const kind = pushed.result?.kind;
+      if (kind === 'unauthenticated' || kind === 'forbidden') return { ok: false, result: pushed.result };
     }
 
     if (isDirty()) {
@@ -706,6 +818,7 @@ export function createSyncEngine({
     generation += 1;
     settleToken += 1; settling = false; settlePromise = null;
     clearSaveTimer();
+    clearFeedTimer();
   }
 
   return {
@@ -718,12 +831,15 @@ export function createSyncEngine({
     get generation() { return generation; },
     get conflictDetailValue() { return conflictDetail(); },
     get pendingSaveScheduled() { return timer !== null; },
+    get pendingFeeds() { return feedQueue.length; },
     setSession,
     hydrate,
     markDirty,
     persistLocal,
     flush,
     syncNow,
+    queueFeed,
+    pushFeeds,
     resolveConflict,
     conflictDetail,
     handleOnline,

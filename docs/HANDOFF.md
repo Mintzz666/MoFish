@@ -1,4 +1,74 @@
-# MoFish 阶段 A 交接
+# MoFish 交接
+
+## 阶段 B：单人完整体验（本轮交付，2026-10-18）
+
+**分支**：`hermes/single-player-3d`，基于阶段 A 验收提交 `38870f194b7e423240a03b803303cd636a891543`。
+**最终提交 SHA 以本轮回复和 GitHub 分支为准**（本文件随最后一次提交更新，SHA 在提交后才产生）。
+未合并 main、未打标签、未部署、未应用任何云端迁移、未触碰 Tibo / 旧 Sites / 令牌。
+
+### 目标
+
+在阶段 A 的账号、云存档、离线保留、冲突备份、换号隔离之上，交付单人完整体验：
+页面改版 + 完整 3D（本机 GPU）+ 自然运动 + 水体与水草 + 可持久造景 + 四阶段成长 + 2D 降级。
+只做 B，不启动多人 C。
+
+### 主要改动
+
+- 存档 v2：`web/model.js`（字符串鱼种、`look {v, seed}`、`decor[]`、四阶段、v1 无损迁移）。
+- 视觉目录：`web/catalog.js`（9 鱼型 / 6 水草 / 5 石 / 2 沉木）。
+- 3D：`web/aquarium/{scene,fish,decor,view3d}.js`（缸体、水面、灯光、焦散、光柱、程序化鱼与造景、
+  相机、拾取、拖拽、喂食、资源释放）。
+- 2D：`web/view2d.js`（同一份存档的降级渲染）。
+- 页面：`web/{index.html,style.css,app.js}`（观赏/布景、画质、2D、鱼卡、浮动布景工具条、响应式）。
+- 云端：`web/cloud/{api,sync}.js` 增加进食队列与 `record_feeding`；`web/storage.js` 增加 feeds 键。
+- 数据库：新增 `supabase/migrations/20261018120000_phase_b_growth_and_aquascaping.sql` 与
+  `supabase/rollback/0002_phase_b_growth.down.sql`。阶段 A 的两份迁移一行未改。
+- 构建：`build.mjs` 改为静态文件白名单 + esbuild 打包（three 与认证 SDK 随包，不暴露源码模块）。
+- 文档：`docs/GROWTH-RULES.md`、`docs/VISUAL-DESIGN.md`、`docs/POST-A-PROGRESS.md`、
+  `docs/POST-A-ACCEPTANCE.md`、`docs/evidence/*.png`；README / ROADMAP / CLOUD-SETUP / AGENTS 同步更新。
+
+### 关键规则
+
+- 成长：鱼苗 `0–0.15`、幼鱼 `0.15–0.4`、亚成年 `0.4–0.7`、成年 `≥0.7`；
+  时间 `0.05/24h`，营养 `0.02/24h`（每口 0.02/3，滚动 24h 最多 3 口）；自然 14 天、正常喂食 10 天到成年；离线结算上限 24h。
+- 已登录时客户端只排队进食事件（`operation_id` 去重），成长由服务端 `settle_growth` 统一结算；游客按同一公式本地记账。
+- 随机外观由持久 `look.seed` 派生，刷新/换设备不重掷；成长只改变体型与显色。
+
+### 验证（本轮实跑）
+
+| 项目 | 结果 |
+| --- | --- |
+| `npm test` | 163 / 163 通过（含 PGlite 上的 SQL 迁移与 v2 结算测试） |
+| `npm run test:concurrency` | 10 / 10 通过（真实临时 Postgres 多连接） |
+| `npm run test:e2e` | 74 / 74 通过（真实构建 + 假后端 + Chrome，含阶段 B 场景） |
+| `npm run build` | 通过；dist 只含打包产物与白名单静态文件 |
+| 手动 QA（本轮脚本，未入库） | 18 / 18（布景、2D/3D、夜间、喂食、画质、无前端异常） |
+| 性能（M4 / Chrome 155 / 真 GPU） | 1440×900 高画质：153 draw calls、25,972 三角形、首帧 53ms、中位 120fps（vsync 上限） |
+
+截图：`docs/evidence/desktop-catalog.png`、`desktop-stages.png`、`desktop-night.png`、`desktop-low.png`、
+`desktop-2d.png`、`decor-edit.png`、`mobile-390.png`。
+
+### 未验证 / 已知问题
+
+1. 阶段 B 迁移**未应用**到任何真实 Supabase 项目，未做真实云端联调；只有 PGlite + 假后端证据。
+2. 手机只有 Chromium 视口仿真，没有真机；iOS Safari 未测。
+3. `webglcontextlost` 的手动触发未在真机验证（无 WebGL 时的自动 2D 已有 e2e 覆盖）。
+4. 音效只做了开关与生命周期，未做听感验收。
+5. 鱼的造型按「低多边形 + 棱面 + 大眼白圈 + 分叉尾」重做过一轮，最终审美由用户判定。
+6. 部署顺序：**先应用迁移，再部署 v2 前端**；回滚顺序相反，见 `supabase/rollback/0002_phase_b_growth.down.sql`。
+
+### 给 Codex 的复核入口
+
+1. 迁移：`supabase/migrations/20261018120000_phase_b_growth_and_aquascaping.sql`
+   （`mofish_state_error_any` 分派、v1 行为不变、`record_feeding` 的越权与窗口）。
+2. 规则：`docs/GROWTH-RULES.md` 与实际常量是否一致（`web/model.js`、`web/cloud/sync.js`）。
+3. 渲染：`web/aquarium/*` 的资源释放、着色器 cache key、画质切换换 canvas。
+4. 界面：按 `docs/VISUAL-DESIGN.md` §9 的截图清单核对类型数量与四阶段。
+5. 回归：`npm test` / `npm run test:concurrency` / `npm run test:e2e`。
+
+---
+
+## 历史：阶段 A 交接
 
 当前开发分支：`codex/phase-a-review-fixes`。基于 Hermes 的
 `1d4f16eb8b95a617c46bc6e7979bec74e9e4043e`，并合入 `origin/main` 的协作及资源清理规则

@@ -391,7 +391,7 @@ test('服务端校验：非法存档被拒绝并返回稳定错误码', { skip: 
   const bad = [
     ['state_not_object', '"just a string"'],
     ['state_not_object', 'null'],
-    ['unsupported_state_version', JSON.stringify({ ...validState(), version: 2 })],
+    ['version_mismatch', JSON.stringify({ ...validState(), version: 3 })], // 声明的 state_version 与内容不一致
     ['fish_not_array', JSON.stringify({ ...validState(), fish: 'nope' })],
     ['fish_count_below_min', JSON.stringify({ ...validState(), fish: [] })],
     ['fish_count_above_max', JSON.stringify({ ...validState(), fish: Array.from({ length: 13 }, (_, i) => ({ id: 'x' + i, name: '鱼', species: 0, born: 1, growth: 0, meals: 0 })) })],
@@ -509,8 +509,8 @@ test('前后端口径一致：客户端 model.validate 产出的存档一定能�
   await db.asUser(USERS.carol, async () => {
     let revision = mine.revision;
     for (const [index, sample] of samples.entries()) {
-      const r = await db.query('select * from public.save_aquarium($1, $2, $3::jsonb)',
-        [mine.aquarium_id, revision, JSON.stringify(sample)]);
+      const r = await db.query('select * from public.save_aquarium($1, $2, $3::jsonb, $4)',
+        [mine.aquarium_id, revision, JSON.stringify(sample), sample.version]);
       assert.equal(r[0].status, 'ok',
         `样本 ${index} 应被服务端接受，实际 ${r[0].status}/${r[0].error_code}: ${JSON.stringify(sample).slice(0, 120)}`);
       revision = r[0].revision;
