@@ -1,0 +1,21 @@
+# Cloudflare Workers 部署配置：纯静态资源站点（没有 Worker 脚本）。
+#
+# 部署步骤（详见 docs/CLOUD-SETUP.md）：
+#   MOFISH_SUPABASE_URL=... MOFISH_SUPABASE_ANON_KEY=... npm run build
+#   npx wrangler@4 deploy
+#
+# 说明：
+# - `[assets]` 指向 dist/ 即本项目全部前端产物；未匹配到资源的请求按 not_found_handling 处理。
+# - html_handling 保持默认的 auto-trailing-slash，适合我们这种单页 + 静态清单的结构。
+# - 这里刻意不写 main：本项目不需要服务端代码，也就没有可被绕过的 Worker 逻辑。
+name = "mofish"
+compatibility_date = "2026-10-16"
+
+[assets]
+directory = "./dist"
+not_found_handling = "none"
+
+# 上线后建议再确认：
+# 1) Cloudflare 控制台里绑定自定义域名并开启 HTTPS；
+# 2) 把该域名加入 Supabase 的 Site URL 与 Redirect URLs 白名单（邮箱验证/重置回调用）；
+# 3) 访问 /auth/v1/health 之外的接口只应来自网页自身的同源请求。

@@ -3,10 +3,29 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "test": "node --test",
-    "start": "python3 -m http.server 5173 --directory web",
+    "start": "npm run build && npm run preview",
+    "preview": "node scripts/serve.mjs --dir dist --port 5173",
     "build": "node build.mjs",
+    "test:cloud": "node scripts/cloud-smoke.mjs",
+    "deploy:cloudflare": "node scripts/deploy-cloudflare.mjs",
+    "test:e2e": "node tests/e2e/cloud-e2e.mjs",
+    "test:concurrency": "node --test tests/sql/concurrency.test.js tests/sql/concurrency-safety.test.js",
     "release": "node scripts/release.mjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.10",
+    "esbuild": "^0.28.2",
+    "pg": "^8.23.1"
+  },
+  "dependencies": {
+    "@supabase/auth-js": "^2.118.0"
+  },
+  "optionalDependencies": {
+    "embedded-postgres": "^18.4.0-beta.17"
   }
 }

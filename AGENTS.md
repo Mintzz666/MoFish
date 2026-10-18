@@ -21,7 +21,7 @@ GitHub: https://github.com/Mintzz666/MoFish
 
 `npm start`: local preview. `npm test`: model tests. `npm run build`: static output in dist/.
 
-Keep MoFish as the product title. Preserve local-first operation; cloud synchronization has not been implemented.
+Keep MoFish as the product title. Preserve local-first operation. Phase A was accepted and closed on 2026-10-18 after real-cloud checks and user-confirmed device tests; see docs/PHASE-A-ACCEPTANCE.md. This chat explicitly keeps acceptance closure separate from release: do not merge main, tag, or run the release hook for this closure. Phase B implementation has not started. The user reordered the remaining work on 2026-10-18: B is the complete single-player visual/3D/animation/aquascaping upgrade (former C+D), and C is multiplayer sharing (former B). The current Hermes long-run brief covers B only; do not automatically implement multiplayer afterward. See docs/HERMES-POST-A-LONG-RUN-PROMPT.md.
 
 ## Hermes / Codex handoff
 
@@ -32,6 +32,10 @@ When the user asks Codex to assess Hermes's current work, default to read-only r
 ## Approved roadmap and role division
 
 The user has requested email/password auth, cloud saves across devices, later shared aquariums, and then improved UI/3D/motion/aquascaping. Read `docs/ROADMAP.md` for sequence and acceptance criteria. Hermes implements the scoped milestone; Codex guides, reviews and manages accepted releases. Do not implement all milestones in a single pass. Email auth must work without a ChatGPT login gate. The recommended initial stack is independent Cloudflare static hosting plus Supabase Auth/Postgres; no home server or extra D1 database is needed for the initial milestone. No cloud features are claimed complete merely because they appear in this roadmap.
+
+The user also authorizes Codex to delegate Phase A fixes to Luna workers with max reasoning, then independently review the changes and manage the development branch. Hermes remains available for user-forwarded implementation tasks. Do not configure a cloud DeepSeek worker for this workflow. Worker completion is not user acceptance of a version.
+
+The user has now requested that Codex and Luna finish Phase A, including the independent cloud entry and real integration checks. This authorizes configuring and deploying the MoFish test entry once the required account access is available; preserve the unrelated Tibo project and the existing private Sites deployment. Supabase account creation/connection and private credential setup stay with the user. This request does not accept a product version or authorize merging main or running the release hook.
 
 ## Local workspace and resource hygiene
 
