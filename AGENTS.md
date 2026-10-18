@@ -21,7 +21,7 @@ GitHub: https://github.com/Mintzz666/MoFish
 
 `npm start`: local preview. `npm test`: model tests. `npm run build`: static output in dist/.
 
-Keep MoFish as the product title. Preserve local-first operation. Phase A cloud synchronization is implemented on the development branch; real Supabase, mail delivery and hosting still require integration verification.
+Keep MoFish as the product title. Preserve local-first operation. Phase A was accepted and closed on 2026-10-18 after real-cloud checks and user-confirmed device tests; see docs/PHASE-A-ACCEPTANCE.md. This chat explicitly keeps acceptance closure separate from release: do not merge main, tag, or run the release hook for this closure. Phase B implementation has not started.
 
 ## Hermes / Codex handoff
 
