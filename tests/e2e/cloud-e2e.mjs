@@ -383,7 +383,7 @@ async function main() {
   const verifyUrl = `${preview.url}/?mail=verify#access_token=${carolSession.access_token}&refresh_token=${carolSession.refresh_token}&type=signup&expires_in=3600`;
   await deviceD.goto(verifyUrl);
   // 3D 初始化在软件渲染下可能占用数秒主线程；轮询等待回调真正完成。
-  await waitFor(deviceD, `document.getElementById('cloud-status').textContent !== '游客'`);
+  await waitFor(deviceD, `document.getElementById('cloud-status').textContent === '已同步'`);
   await sleep(300);
 
   const dChip = await deviceD.evaluate(`document.getElementById('cloud-status').textContent`);

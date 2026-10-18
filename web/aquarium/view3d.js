@@ -126,7 +126,7 @@ export function createView3D({
       }
       agent.fish = fish;
       agent.appearance = appearance;
-      const scale = type.body.len * fishSizeFactor(fish.growth) * appearance.lenScale * 0.95;
+      const scale = type.body.len * fishSizeFactor(fish.growth) * appearance.lenScale * 1.2;
       agent.group.scale.setScalar(scale);
       agent.baseSpeed = type.motion.speed * 0.75 * appearance.tempo;
       agent.turnRate = type.motion.turn;
@@ -134,10 +134,7 @@ export function createView3D({
       agent.freq = type.motion.freq;
       agent.depthBias = type.motion.depthBias;
       agent.bob = type.motion.bob;
-      agent.uniforms = agent.group.userData.bodyUniforms;
-      agent.finUniforms = agent.group.userData.finUniforms;
-      if (agent.uniforms) agent.uniforms.uFinScale.value = 0.55 + 0.45 * Math.pow(clamp(fish.growth / 0.7, 0, 1), 0.85);
-      if (agent.finUniforms) agent.finUniforms.uFinScale.value = agent.uniforms?.uFinScale.value ?? 1;
+      agent.tailPivot = agent.group.userData.tailPivot;
     });
     for (const [id, agent] of agents) {
       if (!seen.has(id)) {
@@ -152,10 +149,12 @@ export function createView3D({
     const appearance = fishAppearance(fish);
     const stageIndex = stageOf(fish.growth).index;
     const group = createFishMesh(type, appearance, fish.growth, settings().fishSegments);
-    const spread = 3.4;
-    const slot = (index % 6) / 6;
-    const y = 0.32 + type.motion.depthBias * (TANK.waterY - 0.8) + (index % 3) * 0.08;
-    group.position.set(-spread / 2 + slot * spread + (Math.random() - 0.5) * 0.3, y, (Math.random() - 0.5) * 1.3);
+    // 初始就铺开：沿缸宽均匀分布，深浅/高度按序错开，避免一开局挤成一团
+    const spread = TANK.width * 0.78;
+    const total = Math.max(1, state.fish.length);
+    const slot = total <= 1 ? 0.5 : index / (total - 1);
+    const y = 0.3 + type.motion.depthBias * (TANK.waterY - 0.8) + ((index % 3) - 1) * 0.16;
+    group.position.set(-spread / 2 + slot * spread + (Math.random() - 0.5) * 0.25, Math.max(0.28, y), (Math.random() - 0.5) * (TANK.depth * 0.62));
     group.userData.fishId = fish.id;
     const agent = {
       id: fish.id, group, typeId: type.id, stageIndex, fish, appearance,
@@ -163,7 +162,7 @@ export function createView3D({
       y: group.position.y, phase: appearance.phase, index,
       baseSpeed: 0.4, turnRate: 1.5, wag: 0.6, freq: 2, depthBias: 0.5, bob: 0.06,
       wander: Math.random() * 100, bobPhase: Math.random() * TAU,
-      uniforms: group.userData.bodyUniforms, finUniforms: group.userData.finUniforms
+      tailPivot: group.userData.tailPivot
     };
     return agent;
   }
@@ -177,8 +176,7 @@ export function createView3D({
     agent.group.userData.fishId = fish.id;
     agent.stageIndex = stageIndex;
     agent.typeId = type.id;
-    agent.uniforms = fresh.userData.bodyUniforms;
-    agent.finUniforms = fresh.userData.finUniforms;
+    agent.tailPivot = fresh.userData.tailPivot;
   }
 
   function syncDecor(decorList, { rebuild = false } = {}) {
@@ -301,8 +299,8 @@ export function createView3D({
       const pos = agent.group.position;
       const maxX = TANK.width / 2 - 0.22;
       const maxZ = TANK.depth / 2 - 0.18;
-      const minY = 0.22;
-      const maxY = TANK.waterY - 0.12;
+      const minY = 0.26;
+      const maxY = TANK.waterY - 0.2;
 
       // 目标：水面食物优先，其次漫游
       let target = null;
@@ -369,7 +367,7 @@ export function createView3D({
         const dz = pos.z - other.group.position.z;
         const dy = pos.y - other.group.position.y;
         const dist = Math.hypot(dx, dz);
-        const personalSpace = FISH_RADIUS + (other.group.scale.x + agent.group.scale.x) * 0.62;
+        const personalSpace = FISH_RADIUS + (other.group.scale.x + agent.group.scale.x) * 0.78;
         if (dist < personalSpace && dist > 0.0001) {
           desired = Math.atan2(dz, dx);
           targetSpeed *= 0.85;
@@ -404,21 +402,15 @@ export function createView3D({
 
       // 姿态：模型朝 +X，heading 是 XZ 平面角度 → 绕 Y 取反
       agent.group.rotation.y = -agent.heading;
-      agent.group.rotation.z = clamp(-(wantY - pos.y) * 2.2, -0.28, 0.28);
-      agent.group.rotation.x = Math.sin(time * 0.4 + agent.phase) * 0.04;
+      agent.group.rotation.z = clamp(-(wantY - pos.y) * 0.9, -0.1, 0.1);
+      agent.group.rotation.x = Math.sin(time * 0.4 + agent.phase) * 0.025;
 
-      if (agent.uniforms) {
+      // 体素鱼的尾巴是独立刚体：绕尾柄左右摆，速度越快摆得越勤、幅度越大
+      if (agent.tailPivot) {
         const speedRatio = clamp(agent.speed / Math.max(0.12, agent.baseSpeed * 1.6), 0, 1.6);
-        agent.uniforms.uTime.value = time;
-        agent.uniforms.uAmp.value = agent.wag * (0.018 + 0.028 * speedRatio) * (reduceMotion ? 0.7 : 1);
-        agent.uniforms.uFreq.value = agent.freq * TAU * (0.65 + 0.5 * speedRatio);
-        agent.uniforms.uBend.value = agent.bend;
-        if (agent.finUniforms) {
-          agent.finUniforms.uTime.value = time;
-          agent.finUniforms.uAmp.value = agent.uniforms.uAmp.value * 1.15;
-          agent.finUniforms.uFreq.value = agent.uniforms.uFreq.value * 0.9;
-          agent.finUniforms.uBend.value = agent.bend;
-        }
+        const wag = agent.group.userData.wagAmp * (0.55 + 0.45 * speedRatio) * (reduceMotion ? 0.6 : 1);
+        const freq = agent.group.userData.wagFreq * (0.7 + 0.5 * speedRatio);
+        agent.tailPivot.rotation.y = Math.sin(time * freq + (agent.group.userData.wagPhase || 0)) * wag + agent.bend * 0.25;
       }
       // 胸鳍小幅划水
       const flap = Math.sin(time * (1.6 + agent.freq * 0.4) + agent.phase) * 0.45;

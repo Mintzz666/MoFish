@@ -140,27 +140,27 @@ export const PLANT_TYPE_BY_ID = Object.fromEntries(PLANT_TYPES.map(t => [t.id, t
 export const ROCK_TYPES = [
   {
     id: 'seiryu', name: '青龙石', shape: 'ridged',
-    params: { size: [0.26, 0.5], height: [0.8, 1.4], rough: [0.18, 0.34], detail: [2, 4] },
+    params: { size: [0.34, 0.65], height: [0.8, 1.4], rough: [0.18, 0.34], detail: [2, 4] },
     palette: { hue: [202, 218], sat: [0.17, 0.23], light: [0.26, 0.32] }
   },
   {
     id: 'lava', name: '火山岩', shape: 'porous',
-    params: { size: [0.16, 0.32], height: [0.7, 1.1], rough: [0.3, 0.5], detail: [3, 6] },
+    params: { size: [0.21, 0.42], height: [0.7, 1.1], rough: [0.3, 0.5], detail: [3, 6] },
     palette: { hue: [14, 28], sat: [0.20, 0.28], light: [0.26, 0.32] }
   },
   {
     id: 'pebble', name: '溪卵石', shape: 'smooth',
-    params: { size: [0.12, 0.26], height: [0.45, 0.72], rough: [0.06, 0.14], detail: [1, 2] },
+    params: { size: [0.16, 0.34], height: [0.45, 0.72], rough: [0.06, 0.14], detail: [1, 2] },
     palette: { hue: [34, 50], sat: [0.15, 0.21], light: [0.28, 0.40] }
   },
   {
     id: 'slate', name: '板岩', shape: 'layered',
-    params: { size: [0.24, 0.44], height: [0.5, 0.9], rough: [0.16, 0.3], detail: [3, 5] },
+    params: { size: [0.31, 0.57], height: [0.5, 0.9], rough: [0.16, 0.3], detail: [3, 5] },
     palette: { hue: [210, 228], sat: [0.15, 0.21], light: [0.26, 0.32] }
   },
   {
     id: 'sandstone', name: '砂岩', shape: 'blocky',
-    params: { size: [0.2, 0.42], height: [0.55, 0.95], rough: [0.22, 0.38], detail: [2, 4] },
+    params: { size: [0.26, 0.55], height: [0.55, 0.95], rough: [0.22, 0.38], detail: [2, 4] },
     palette: { hue: [36, 48], sat: [0.26, 0.36], light: [0.30, 0.42] }
   }
 ];

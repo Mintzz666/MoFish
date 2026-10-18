@@ -16,8 +16,8 @@
 
 - 存档 v2：`web/model.js`（字符串鱼种、`look {v, seed}`、`decor[]`、四阶段、v1 无损迁移）。
 - 视觉目录：`web/catalog.js`（9 鱼型 / 6 水草 / 5 石 / 2 沉木）。
-- 3D：`web/aquarium/{scene,fish,decor,view3d}.js`（缸体、水面、灯光、焦散、光柱、程序化鱼与造景、
-  相机、拾取、拖拽、喂食、资源释放）。
+- 3D：`web/aquarium/{scene,fish,decor,view3d}.js`（缸体、水面、灯光、焦散、光柱、体素鱼与造景、
+  相机、拾取、拖拽、喂食、资源释放）。鱼/水草/石头/沉木统一为 Minecraft 式方块造型（用户明确要求）。
 - 2D：`web/view2d.js`（同一份存档的降级渲染）。
 - 页面：`web/{index.html,style.css,app.js}`（观赏/布景、画质、2D、鱼卡、浮动布景工具条、响应式）。
 - 云端：`web/cloud/{api,sync}.js` 增加进食队列与 `record_feeding`；`web/storage.js` 增加 feeds 键。
