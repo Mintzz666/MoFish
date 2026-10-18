@@ -325,8 +325,15 @@ export function createFakeSupabase({ startMs = Date.now() } = {}) {
           return json(200, [{ status: 'not_found', credited: 0, duplicate: false, error_code: 'fish_or_aquarium_not_found' }]);
         }
         const list = feedEvents.get(sub) || [];
-        if (list.some((e) => e.op === op)) {
+        const existing = list.find(e => e.op === op);
+        if (existing) {
+          if (existing.fishId !== fishId || existing.bites !== bites) {
+            return json(200, [{ status: 'invalid_argument', error_code: 'operation_mismatch' }]);
+          }
           return json(200, [{ status: 'ok', credited: 0, duplicate: true }]);
+        }
+        if (list.filter(e => e.createdAt > clock() - 86400000).length >= 500) {
+          return json(200, [{ status: 'rate_limited', error_code: 'too_many_feed_events' }]);
         }
         list.push({ op, fishId, bites, credited: 0, appliedAt: null, createdAt: clock() });
         feedEvents.set(sub, list);

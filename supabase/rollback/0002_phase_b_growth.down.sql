@@ -7,6 +7,16 @@
 --   3) 最后执行本脚本。
 -- 数据影响：删除进食事件表（营养记账历史随之消失，鱼已有的 growth/meals 保留在 state_json 里）。
 
+-- Keep psql/autocommit execution atomic too. Refuse before dropping any event
+-- history if v2 saves have not been exported and converted deliberately.
+begin;
+do $$
+begin
+  if exists (select 1 from public.aquariums where state_version <> 1 or state_json->>'version' is distinct from '1') then
+    raise exception 'phase_b_rollback_requires_v1: export and convert v2 saves before rollback';
+  end if;
+end $$;
+
 -- 1) 收回 v2 专属函数权限并删除函数
 revoke all on function public.record_feeding(uuid, uuid, text, integer) from authenticated;
 drop function if exists public.record_feeding(uuid, uuid, text, integer);
@@ -226,3 +236,5 @@ revoke all on function public.settle_growth(uuid, integer) from anon;
 grant execute on function public.save_aquarium(uuid, bigint, jsonb, integer) to authenticated;
 grant execute on function public.ensure_aquarium(jsonb, integer) to authenticated;
 grant execute on function public.settle_growth(uuid, integer) to authenticated;
+
+commit;

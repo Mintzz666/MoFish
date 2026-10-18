@@ -38,14 +38,14 @@ export const QUALITY = {
 };
 
 const DAY = {
-  bg: new THREE.Color('#e8f6ef'),
-  fog: new THREE.Color('#d8ecdf'),
+  bg: new THREE.Color('#ecf2e9'),
+  fog: new THREE.Color('#d3e9df'),
   water: new THREE.Color('#a2e2d1'),
   key: new THREE.Color('#fff8ea'),
   fill: new THREE.Color('#cdeee2'),
   hemiSky: new THREE.Color('#f2fbf6'),
   hemiGround: new THREE.Color('#c8b48f'),
-  exposure: 1.0
+  exposure: 1.14
 };
 
 const NIGHT = {
@@ -242,10 +242,10 @@ export function createTankScene({ canvas, quality = 'high' }) {
   camera.position.set(0, 1.5, 5.1);
 
   // ---------------------------------------------------------------- 灯光
-  const hemi = new THREE.HemisphereLight(DAY.hemiSky.getHex(), DAY.hemiGround.getHex(), 0.62);
+  const hemi = new THREE.HemisphereLight(DAY.hemiSky.getHex(), DAY.hemiGround.getHex(), 1.15);
   scene.add(hemi);
 
-  const key = new THREE.DirectionalLight(DAY.key.getHex(), 1.35);
+  const key = new THREE.DirectionalLight(DAY.key.getHex(), 2.15);
   key.position.set(1.4, 6.2, 3.4);
   key.castShadow = settings.shadows;
   key.shadow.mapSize.set(settings.shadowSize, settings.shadowSize);
@@ -273,10 +273,10 @@ export function createTankScene({ canvas, quality = 'high' }) {
 
   const wallMat = new THREE.MeshBasicMaterial({
     map: gradientTexture([
-      [0, '#79c9b6'],
-      [0.35, '#4f9f90'],
-      [0.75, '#41857b'],
-      [1, '#2f6d66']
+      [0, '#d4e9dd'],
+      [0.35, '#9acdbb'],
+      [0.75, '#72ac9d'],
+      [1, '#508b80']
     ]),
     toneMapped: false,
     side: THREE.DoubleSide
@@ -300,8 +300,8 @@ export function createTankScene({ canvas, quality = 'high' }) {
   sandGeo.rotateX(-Math.PI / 2);
   const sandPos = sandGeo.getAttribute('position');
   const sandColors = [];
-  const cSand = new THREE.Color('#c3ac83');
-  const cSandDeep = new THREE.Color('#8d7f61');
+  const cSand = new THREE.Color('#e6d6b4');
+  const cSandDeep = new THREE.Color('#b8aa88');
   for (let i = 0; i < sandPos.count; i += 1) {
     const x = sandPos.getX(i);
     const z = sandPos.getZ(i);
@@ -327,7 +327,7 @@ export function createTankScene({ canvas, quality = 'high' }) {
     const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
     const count = settings.caustics ? 46 : 22;
     const geo = new THREE.DodecahedronGeometry(0.028, 0);
-    const mat = new THREE.MeshStandardMaterial({ color: '#a99a7c', roughness: 0.95, metalness: 0, flatShading: true, vertexColors: false });
+    const mat = new THREE.MeshStandardMaterial({ color: '#b9ad90', roughness: 0.95, metalness: 0, flatShading: true, vertexColors: false });
     const pebbles = new THREE.InstancedMesh(geo, mat, count);
     const dummy = new THREE.Object3D();
     for (let i = 0; i < count; i += 1) {
@@ -470,9 +470,9 @@ export function createTankScene({ canvas, quality = 'high' }) {
     scene.fog.color.copy(from.fog).lerp(to.fog, value);
     hemi.color.copy(from.hemiSky).lerp(to.hemiSky, value);
     hemi.groundColor.copy(from.hemiGround).lerp(to.hemiGround, value);
-    hemi.intensity = 0.62 - value * 0.26;
+    hemi.intensity = 1.15 - value * 0.76;
     key.color.copy(from.key).lerp(to.key, value);
-    key.intensity = 1.35 - value * 0.78;
+    key.intensity = 2.15 - value * 1.48;
     fill.color.copy(from.fill).lerp(to.fill, value);
     fill.intensity = 0.45 - value * 0.2;
     rim.color.copy(from.key).lerp(to.key, value);

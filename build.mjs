@@ -46,7 +46,7 @@ if (url || anonKey) {
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist', { recursive: true });
 // 只复制真正需要发布的静态文件；JS 由 esbuild 打包（含 three 与认证 SDK），不再暴露源码模块。
-const STATIC_FILES = ['index.html', 'style.css', 'icon.svg', 'manifest.webmanifest', '_headers', 'sw.js', 'config.js'];
+const STATIC_FILES = ['index.html', 'style.css', 'icon.svg', 'manifest.webmanifest', '_headers', 'sw.js', 'config.js', 'THIRD-PARTY-NOTICES.txt'];
 for (const file of STATIC_FILES) {
   await cp(`web/${file}`, `dist/${file}`);
 }

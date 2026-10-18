@@ -55,7 +55,7 @@ record_feeding(p_id uuid, p_operation_id uuid, p_fish_id text, p_bites int)
 - `mofish_feed_events` 上 `unique (aquarium_id, operation_id)`：重复提交（重试、双端重放）返回 `duplicate = true`，不会记第二次。
 - 服务端只写事件，**不改 growth / revision**；营养统一在 `settle_growth` 里结算。
 - 鱼必须确实存在于该鱼缸的 `state_json.fish`，且鱼缸属于当前 `auth.uid()`；否则返回 `not_found`（不区分「不存在」与「不是你的」）。
-- 防滥用：单缸 24 小时最多 500 条事件，超过返回 `rate_limited`。
+- 防滥用：单缸 24 小时最多 500 条事件，超过返回 `rate_limited`。与结算共用鱼缸行锁，先判断 operation_id 重试再检查新事件限额；同 ID 不同鱼/口数返回 `operation_mismatch`。
 
 ### 3.2 成长结算 `settle_growth`
 
@@ -69,7 +69,7 @@ record_feeding(p_id uuid, p_operation_id uuid, p_fish_id text, p_bites int)
 
 - **游客**：`model.eat()` 本地记账（同样的 0.00667/口、同样 3 口窗口），`fedAt` 随存档持久化，刷新不会重复计入。
 - **已登录**：鱼吃到时只调用 `engine.queueFeed(fishId)`，把 `{op, fishId, bites}` 落本机队列并去抖提交；本机**不**自增 `meals/growth`，避免与服务端重复计算。服务端结算返回后采用权威状态。
-- 离线时队列落盘（`mofish.feeds.<userId>.<aquariumId>`），重连后按顺序重试；重复提交由 `operation_id` 去重。
+- 离线时队列落盘（`mofish.feeds.<userId>.<aquariumId>`），重连后按顺序补交全部待同步事件，逐条保存确认结果；重复提交由 `operation_id` 去重。先保存新鱼/编辑，再进食记账，再结算；失败时保留队列并显示失败，不能提前显示已同步。
 
 ## 4. 旧档与版本兼容
 
@@ -88,7 +88,7 @@ record_feeding(p_id uuid, p_operation_id uuid, p_fish_id text, p_bites int)
   - 替换 `save_aquarium` / `ensure_aquarium` / `settle_growth`，v1 行为保持不变。
 - **未应用到任何真实项目**。部署顺序：先应用迁移 → 再部署 v2 前端（`docs/CLOUD-SETUP.md` 第 3 节）。
 - 若 v2 前端先上线而迁移未应用：云端会拒绝 `state_version = 2` 的写入，客户端显示「云端拒绝」并保留本机副本，不丢档；这就是为什么必须按顺序升级。
-- 回滚脚本：`supabase/rollback/0002_phase_b_growth.down.sql`（先回滚前端、再执行脚本）。
+- 回滚脚本：`supabase/rollback/0002_phase_b_growth.down.sql`。先停用 v2 写入、备份并明确转换 v2 存档后再回滚；脚本在显式事务内最先检查 v2 行，未转换则拒绝，不先删除事件表。
 
 ## 6. 测试与加速方法
 

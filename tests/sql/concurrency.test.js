@@ -13,6 +13,7 @@
 //   4) CI 可设置 `MOFISH_REQUIRE_POSTGRES=1`，将上述启动问题提升为硬失败。
 
 import test from 'node:test';
+import { initial } from '../../web/model.js';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -110,7 +111,7 @@ async function connectAs(userId) {
 async function seedAquarium(ownerId, state = validState({ idPrefix: 'conc' })) {
   // 用 RPC 开缸（与客户端走同一条路径），再以管理员身份回拨成长锚点
   const client = await connectAs(ownerId);
-  const { rows } = await client.query('select * from public.ensure_aquarium($1::jsonb)', [JSON.stringify(state)]);
+  const { rows } = await client.query('select * from public.ensure_aquarium($1::jsonb,$2)', [JSON.stringify(state), state.version]);
   await client.end();
   assert.equal(rows[0].status, 'ok');
   return rows[0];
@@ -236,4 +237,40 @@ test('并发结算 vs 并发保存交错：不会互相覆盖，且成长只结�
     await c1.end();
     await c2.end();
   }
+});
+
+
+test('v2 多连接进食重试去重，两个结算请求只记一次营养', { skip: skipReason }, async () => {
+  await admin.query('delete from public.aquariums where owner_id = $1', [USER_A]);
+  const aquarium = await seedAquarium(USER_A, initial());
+  const fishId = aquarium.state_json.fish[0].id;
+  const op = '77777777-7777-4777-8777-777777777777';
+  const c1 = await connectAs(USER_A), c2 = await connectAs(USER_A);
+  try {
+    const results = await Promise.all([c1, c2].map(c => c.query(
+      'select * from public.record_feeding($1,$2,$3,3)', [aquarium.aquarium_id, op, fishId])));
+    assert.deepEqual(results.map(r => r.rows[0].duplicate).sort(), [false, true]);
+    await Promise.all([c1,c2].map(c => c.query('select * from public.settle_growth($1)', [aquarium.aquarium_id])));
+    const { rows } = await admin.query("select state_json->'fish'->0 as fish from public.aquariums where id=$1", [aquarium.aquarium_id]);
+    assert.equal(rows[0].fish.meals, 3);
+    assert.ok(Math.abs(rows[0].fish.growth - 0.02) < 0.00001);
+    const events = await admin.query('select count(*)::int as n from public.mofish_feed_events where aquarium_id=$1 and applied_at is not null', [aquarium.aquarium_id]);
+    assert.equal(events.rows[0].n, 1);
+  } finally { await c1.end(); await c2.end(); }
+});
+
+test('v2 多连接在 499 条时竞争，最多再接受一条新进食', { skip: skipReason }, async () => {
+  await admin.query('delete from public.aquariums where owner_id = $1', [USER_A]);
+  const aquarium = await seedAquarium(USER_A, initial());
+  const fishId = aquarium.state_json.fish[0].id;
+  await admin.query(`insert into public.mofish_feed_events(aquarium_id,operation_id,fish_id)
+    select $1,gen_random_uuid(),$2 from generate_series(1,499)`, [aquarium.aquarium_id, fishId]);
+  const c1 = await connectAs(USER_A), c2 = await connectAs(USER_A);
+  try {
+    const results = await Promise.all([c1,c2].map(c => c.query(
+      'select * from public.record_feeding($1,gen_random_uuid(),$2,1)', [aquarium.aquarium_id, fishId])));
+    assert.deepEqual(results.map(r => r.rows[0].status).sort(), ['ok','rate_limited']);
+    const events = await admin.query('select count(*)::int as n from public.mofish_feed_events where aquarium_id=$1', [aquarium.aquarium_id]);
+    assert.equal(events.rows[0].n, 500);
+  } finally { await c1.end(); await c2.end(); }
 });

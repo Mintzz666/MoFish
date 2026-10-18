@@ -59,6 +59,7 @@ export function interpretRpcRow(row) {
   if (status === 'conflict') {
     return { kind: 'conflict', revision: row.revision == null ? null : Number(row.revision) };
   }
+  if (status === 'rate_limited') return { kind: 'rate_limited', message: '今天的进食记录较多，待同步记录已保留，请稍后再试', retryable: true };
   if (status === 'not_found') return { kind: 'not_found', message: '云端没有这条鱼缸' };
   if (status === 'invalid_state') {
     return { kind: 'invalid_state', errorCode: row.error_code || 'invalid_state', message: '云端认为这份存档不合法，已停止写入以免损坏数据' };

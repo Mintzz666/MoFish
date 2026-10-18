@@ -143,6 +143,10 @@ async function newContextPage(browserWs, label) {
   const list = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/list`)).json();
   const target = list.find(t => t.id === targetId);
   const page = await connect(target.webSocketDebuggerUrl);
+  // 同步用例使用 2D，避免多个后台软件 WebGL 场景争抢 CPU；E 独立验证真正 3D。
+  await page.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `try { localStorage.setItem('mofish.prefs', JSON.stringify(${JSON.stringify(label === 'E' ? {quality:'low'} : {renderer:'2d',quality:'low'})})); } catch {}`
+  });
   page.label = label;
   page.contextId = browserContextId;
   return page;
@@ -557,6 +561,7 @@ async function main() {
   await waitFor(devicePhaseB, `window.__mofish.renderer === '3d'`);
   await sleep(400);
   check('阶段 B：存档为 v2', (await devicePhaseB.evaluate('window.__mofish?.version')) === 2);
+  check('默认观赏模式与选中标签一致', await devicePhaseB.evaluate(`window.__mofish.editMode === 'view' && document.getElementById('mode-view').getAttribute('aria-selected') === 'true'`));
   check('阶段 B：默认使用 3D 渲染', (await devicePhaseB.evaluate('window.__mofish?.renderer')) === '3d');
 
   const stageLabels = [];
@@ -608,6 +613,17 @@ async function main() {
     `取消前=${floatCount + 1}，取消后=${floatAfterCancel}`);
   check('取消后待确认按钮不再残留', await devicePhaseB.evaluate('document.getElementById("float-cancel").hidden === true'));
 
+  await devicePhaseB.click('#add-rock');
+  await devicePhaseB.click('#float-confirm');
+  const beforeNudge = await devicePhaseB.evaluate('window.__mofish.state.decor.at(-1).x');
+  await devicePhaseB.click('[data-decor-nudge="0.025,0"]');
+  const nudged = await devicePhaseB.evaluate('window.__mofish.state.decor.at(-1).x');
+  check('触屏方向按钮可移动造景', nudged > beforeNudge);
+  await devicePhaseB.click('#decor-undo');
+  check('方向微调一次撤销即可恢复', Math.abs((await devicePhaseB.evaluate('window.__mofish.state.decor.at(-1).x')) - beforeNudge) < 1e-6);
+  check('取消按钮隐藏时不占据可点击布局', await devicePhaseB.evaluate(`document.getElementById('float-cancel').getClientRects().length === 0`));
+  check('工具条位于鱼缸内', await devicePhaseB.evaluate(`(()=>{const a=document.getElementById('aquarium').getBoundingClientRect(), b=document.getElementById('decor-float').getBoundingClientRect();return b.top >= a.top && b.bottom <= a.bottom;})()`));
+
   // 2D 降级与画质
   await devicePhaseB.click('#toggle-2d');
   await sleep(900);
@@ -623,6 +639,9 @@ async function main() {
   await devicePhaseB.evaluate(`(()=>{const q=document.getElementById('quality');q.value='high';q.dispatchEvent(new Event('change'));return q.value;})()`);
   await sleep(1600);
 
+  await devicePhaseB.evaluate(`(()=>{const q=document.getElementById('quality');q.value='low';q.dispatchEvent(new Event('change'));})()`);
+  await sleep(700);
+
   // 夜间
   await devicePhaseB.click('#night');
   check('夜间模式写入存档', (await devicePhaseB.evaluate('window.__mofish.state.night')) === true);
@@ -631,7 +650,7 @@ async function main() {
   // 喂食：鱼真的吃到才算成长（游客模式本机记账）
   const mealsBefore = await devicePhaseB.evaluate('window.__mofish.state.fish.reduce((s,f)=>s+f.meals,0)');
   await devicePhaseB.click('#feed');
-  const feedDeadline = Date.now() + 12000;
+  const feedDeadline = Date.now() + 30000;
   let mealsAfter = mealsBefore;
   while (mealsAfter === mealsBefore && Date.now() < feedDeadline) {
     await sleep(400);
@@ -639,6 +658,38 @@ async function main() {
   }
   check('小鱼吃到食物后才记进食', mealsAfter > mealsBefore, `${mealsBefore} → ${mealsAfter}`);
   await devicePhaseB.shot('08-desktop-phase-b.png');
+
+  // 布景撤销只能影响造景，不能撤回后来的改名/成长，更不能跨身份恢复快照。
+  await devicePhaseB.click('#add-rock');
+  await devicePhaseB.click('#float-confirm');
+  await devicePhaseB.click('#decor-rotate');
+  await devicePhaseB.click('.fish-card');
+  await devicePhaseB.click('#detail-rename');
+  await devicePhaseB.type('#fish-name', '撤销不改鱼名');
+  await devicePhaseB.click('#rename');
+  await devicePhaseB.click('#decor-undo');
+  check('布景撤销保留之后的鱼名和进食记录', await devicePhaseB.evaluate(`window.__mofish.state.fish[0].name === '撤销不改鱼名' && window.__mofish.state.fish.reduce((s,f)=>s+f.meals,0) >= ${mealsAfter}`));
+
+  await devicePhaseB.click('#account-button');
+  await devicePhaseB.type('#auth-email', 'alice@example.com');
+  await devicePhaseB.type('#auth-password', 'goodpassword123');
+  await devicePhaseB.click('#auth-sign-in');
+  await waitFor(devicePhaseB, `!document.getElementById('conflict-box').hidden || document.getElementById('cloud-status').textContent === '已同步'`);
+  if (await devicePhaseB.evaluate(`!document.getElementById('conflict-box').hidden`)) {
+    await devicePhaseB.click('#conflict-keep-cloud');
+  }
+  await waitFor(devicePhaseB, `document.getElementById('cloud-status').textContent === '已同步'`);
+  await devicePhaseB.evaluate(`document.getElementById('account-dialog').close()`);
+  const accountFishIds = await devicePhaseB.evaluate(`window.__mofish.state.fish.map(f=>f.id).join(',')`);
+  await devicePhaseB.click('#mode-decor');
+  await devicePhaseB.evaluate(`document.getElementById('decor-undo').click()`);
+  check('切换身份后撤销不能恢复上一份鱼缸', (await devicePhaseB.evaluate(`window.__mofish.state.fish.map(f=>f.id).join(',')`)) === accountFishIds);
+
+  const beforeLoss = await devicePhaseB.evaluate('JSON.stringify(window.__mofish.state.fish)');
+  await devicePhaseB.evaluate(`(()=>{const gl=document.getElementById('tank').getContext('webgl2');gl.getExtension('WEBGL_lose_context').loseContext();})()`);
+  await waitFor(devicePhaseB, `window.__mofish.renderer === '2d'`);
+  check('实际触发 WebGL 上下文丢失后切换到 2D', await devicePhaseB.evaluate(`window.__mofish.renderer === '2d'`));
+  check('上下文丢失后鱼的持久状态保留', (await devicePhaseB.evaluate('JSON.stringify(window.__mofish.state.fish)')) === beforeLoss);
 
   const phaseBErrors = devicePhaseB.errors().filter(e => !/Failed to load resource/.test(e));
   check('阶段 B 没有前端异常', phaseBErrors.length === 0, phaseBErrors.slice(0, 3).join(' | '));

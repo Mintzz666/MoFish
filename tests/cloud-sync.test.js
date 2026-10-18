@@ -1510,3 +1510,127 @@ test('[P1-1] 同步顺序固定为「先上传本机改动 → 再结算服务�
     `本机采纳的成长不能重复计算，实际 ${h.current.fish[0].growth}`);
   assert.equal(h.lastStatus, STATUS.SYNCED);
 });
+
+test('进食队列一次重连同步排空超过一个批次，不遗留已吃到的事件', async () => {
+  const h = createHarness();
+  const login = await h.register();
+  await h.engine.setSession(login.session);
+  const fishId = h.current.fish[0].id;
+  const before = h.current.fish[0].meals;
+  h.setOnline(false);
+  for (let i = 0; i < 55; i++) h.engine.queueFeed(fishId);
+  h.setOnline(true);
+  const result = await h.engine.syncNow({ reason: 'reconnect' });
+  assert.equal(result.ok, true);
+  assert.equal(h.engine.pendingFeeds, 0, '一个批次之后必须继续提交剩余事件');
+  assert.equal(h.current.fish[0].meals, before + 55);
+});
+
+test('进食上传失败不得被后续结算伪装成已同步', async () => {
+  const fault = { active: false };
+  const h = createHarness({ overrides: { rules: [ctx => fault.active && ctx.path.endsWith('record_feeding')
+    ? new Response(JSON.stringify({ message: 'temporary unavailable' }), { status: 503 }) : null] } });
+  const login = await h.register();
+  await h.engine.setSession(login.session);
+  fault.active = true;
+  h.engine.queueFeed(h.current.fish[0].id);
+  const result = await h.engine.syncNow();
+  assert.equal(result.ok, false);
+  assert.equal(h.engine.status, STATUS.ERROR);
+  assert.equal(h.engine.pendingFeeds, 1);
+  fault.active = false;
+  assert.equal((await h.engine.syncNow()).ok, true);
+  assert.equal(h.engine.pendingFeeds, 0);
+});
+
+test('新鱼未保存时先保存，再提交它的进食，单次同步即可确认', async () => {
+  const h = createHarness();
+  const login = await h.register();
+  await h.engine.setSession(login.session);
+  h.current.fish.push({ ...cloneState(h.current.fish[0]), id: 'new-fish', name: '新来的', meals: 0 });
+  h.engine.markDirty();
+  h.engine.queueFeed('new-fish');
+  h.requests.length = 0;
+  assert.equal((await h.engine.syncNow()).ok, true);
+  assert.equal(h.engine.pendingFeeds, 0);
+  assert.equal(h.current.fish.find(f => f.id === 'new-fish').meals, 1);
+  const order = h.requests.map(r => r.path.split('/').at(-1));
+  assert.ok(order.indexOf('save_aquarium') < order.indexOf('record_feeding'));
+});
+
+test('重新登录恢复本机进食队列后自动补交，不需再点同步', async () => {
+  const h = createHarness();
+  const login = await h.register();
+  await h.engine.setSession(login.session);
+  const fishId = h.current.fish[0].id;
+  h.setOnline(false);
+  h.engine.queueFeed(fishId);
+  await h.engine.setSession(null);
+  h.setOnline(true);
+  await h.engine.setSession(login.session);
+  assert.equal(h.engine.pendingFeeds, 0);
+  assert.equal(h.current.fish[0].meals, 1);
+});
+
+test('旧账号进食响应不能释放新账号正在提交的队列', async () => {
+  const begunA = deferred(), begunB = deferred(), releaseA = deferred(), releaseB = deferred();
+  let idA, idB;
+  const h = createHarness({ gate: async ctx => {
+    if (!ctx.path.endsWith('record_feeding')) return;
+    if (ctx.body.p_id === idA) { begunA.resolve(); await releaseA.promise; }
+    if (ctx.body.p_id === idB) { begunB.resolve(); await releaseB.promise; }
+  } });
+  const a = await h.register('a-feed@example.com');
+  await h.engine.setSession(a.session);
+  idA = h.engine.snapshot.aquariumId;
+  h.engine.queueFeed(h.current.fish[0].id);
+  const old = h.engine.pushFeeds();
+  await begunA.promise;
+  const b = await h.register('b-feed@example.com');
+  await h.engine.setSession(b.session);
+  idB = h.engine.snapshot.aquariumId;
+  h.engine.queueFeed(h.current.fish[0].id);
+  const current = h.engine.pushFeeds();
+  await begunB.promise;
+  releaseA.resolve();
+  assert.equal((await old).skipped, 'stale');
+  assert.equal(h.engine.pushFeeds(), current, '旧 finally 不能清除新账号在途指针');
+  assert.equal(h.engine.pendingFeeds, 1);
+  releaseB.resolve();
+  assert.equal((await current).ok, true);
+  assert.equal(h.engine.pendingFeeds, 0);
+});
+
+test('离线队列满时拒绝新事件并提示，不能静默移除旧记录', async () => {
+  const h = createHarness();
+  const login = await h.register();
+  await h.engine.setSession(login.session);
+  h.setOnline(false);
+  for (let i = 0; i < 200; i++) assert.equal(h.engine.queueFeed(h.current.fish[0].id).ok, true);
+  const id = h.engine.snapshot.aquariumId, uid = login.session.user.id;
+  const first = h.store.readFeeds(uid,id)[0].op;
+  assert.equal(h.engine.queueFeed(h.current.fish[0].id).skipped, 'queue_full');
+  assert.equal(h.store.readFeeds(uid,id)[0].op, first);
+  assert.equal(h.engine.pendingFeeds, 200);
+  assert.ok(h.notices.some(n => n.includes('已满')));
+});
+
+test('成长结算在途时吃到的食物，去抖到期后仍继续补交', async () => {
+  const begun = deferred(), release = deferred();
+  let holding = false;
+  const h = createHarness({ gate: async ctx => {
+    if (holding && ctx.path.endsWith('settle_growth')) { holding = false; begun.resolve(); await release.promise; }
+  } });
+  const login = await h.register();
+  await h.engine.setSession(login.session);
+  holding = true;
+  const settling = h.engine.syncNow();
+  await begun.promise;
+  h.engine.queueFeed(h.current.fish[0].id);
+  const timedSync = h.runTimers();
+  release.resolve();
+  await Promise.all([settling, timedSync]);
+  await h.runTimers();
+  assert.equal(h.engine.pendingFeeds, 0);
+  assert.equal(h.current.fish[0].meals, 1);
+});

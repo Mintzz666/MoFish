@@ -245,3 +245,35 @@ test('客户端没有进食事件表的直接读写权限，匿名与越权都�
   const anonRead = await db.asAnon(async () => db.expectError('select * from public.aquariums'));
   assert.match(String(anonRead), /permission denied/i);
 });
+
+test('进食额度已满仍可确认已提交 operation_id 的重试，载荷不一致则拒绝', { skip: skipReason }, async () => {
+  const row = await freshAquarium(USERS.alice, v2State());
+  const fishId = row.state_json.fish[0].id;
+  const op = '88888888-8888-4888-8888-888888888888';
+  await db.asUser(USERS.alice, () => db.query('select * from public.record_feeding($1,$2,$3,1)', [row.aquarium_id, op, fishId]));
+  await db.asAdmin(() => db.query(`insert into public.mofish_feed_events(aquarium_id,operation_id,fish_id)
+    select $1,gen_random_uuid(),$2 from generate_series(1,499)`, [row.aquarium_id, fishId]));
+  const retry = await db.asUser(USERS.alice, () => db.query('select * from public.record_feeding($1,$2,$3,1)', [row.aquarium_id, op, fishId]));
+  assert.equal(retry[0].status, 'ok');
+  assert.equal(retry[0].duplicate, true);
+  const mismatch = await db.asUser(USERS.alice, () => db.query('select * from public.record_feeding($1,$2,$3,2)', [row.aquarium_id, op, fishId]));
+  assert.equal(mismatch[0].status, 'invalid_argument');
+});
+
+test('有 v2 存档时回滚先拒绝，不能删除进食表或半还原函数', { skip: skipReason }, async () => {
+  const { readFile } = await import('node:fs/promises');
+  const isolated = await createTestDb({ pgliteModule });
+  try {
+    await isolated.addUser(USERS.alice, 'rollback@example.com');
+    await isolated.asUser(USERS.alice, () => isolated.query('select * from public.ensure_aquarium($1,2)', [JSON.stringify(v2State())]));
+    const rollback = await readFile(new URL('../../supabase/rollback/0002_phase_b_growth.down.sql', import.meta.url), 'utf8');
+    await isolated.asAdmin(async () => {
+      await assert.rejects(isolated.db.exec(rollback), /phase_b_rollback_requires_v1/);
+      await isolated.db.exec('rollback');
+      const table = await isolated.query("select to_regclass('public.mofish_feed_events') as name");
+      assert.equal(table[0].name, 'mofish_feed_events');
+      const rpc = await isolated.query("select to_regprocedure('public.record_feeding(uuid,uuid,text,integer)') as name");
+      assert.ok(rpc[0].name);
+    });
+  } finally { await isolated.close(); }
+});

@@ -211,7 +211,7 @@ export function createSyncEngine({
   function persistFeeds() {
     const uid = userId();
     if (!uid || !aquariumId) return;
-    store.writeFeeds(uid, aquariumId, feedQueue);
+    return store.writeFeeds(uid, aquariumId, feedQueue);
   }
 
   function clearFeedTimer() {
@@ -233,11 +233,14 @@ export function createSyncEngine({
     if (disposed) return { ok: false, skipped: 'disposed' };
     if (mode !== 'cloud' || !aquariumId) return { ok: false, skipped: 'guest' };
     if (conflict) return { ok: false, skipped: 'conflict' };
+    if (feedQueue.length >= 200) {
+      notify('待同步的进食记录已满，请联网同步后再继续喂食。');
+      return { ok: false, skipped: 'queue_full' };
+    }
     const op = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
       ? globalThis.crypto.randomUUID()
       : `op-${now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     feedQueue.push({ op, fishId: String(fishId).slice(0, 100), bites: Math.max(1, Math.min(8, Math.floor(bites) || 1)), at: now() });
-    if (feedQueue.length > 200) feedQueue = feedQueue.slice(-200);
     persistFeeds();
     if (!isOnline()) {
       setStatus(STATUS.OFFLINE);
@@ -250,29 +253,36 @@ export function createSyncEngine({
 
   /** 把未提交的进食事件按顺序提交；服务端按 operation_id 去重，重试安全。 */
   function pushFeeds(gen = generation) {
+    if (stale(gen)) return Promise.resolve({ ok: false, skipped: 'stale' });
     if (!feedQueue.length) return Promise.resolve({ ok: true, sent: 0 });
     if (pushingFeeds) return pushingFeeds;
-    if (!aquariumId || !isOnline()) return Promise.resolve({ ok: false, skipped: 'offline' });
-    const batch = feedQueue.slice(0, 24);
-    const operation = (async () => {
+    if (!aquariumId || !isOnline()) {
+      setStatus(STATUS.OFFLINE);
+      return Promise.resolve({ ok: false, skipped: 'offline' });
+    }
+    const aquariumAtRequest = aquariumId;
+    const operation = Promise.resolve().then(async () => {
       let sent = 0;
-      for (const item of batch) {
-        const res = await api.recordFeeding(aquariumId, item.op, item.fishId, item.bites);
+      while (feedQueue.length) {
+        if (stale(gen)) return { ok: false, skipped: 'stale' };
+        if (!isOnline()) { setStatus(STATUS.OFFLINE); return { ok: false, skipped: 'offline' }; }
+        const item = feedQueue[0];
+        const res = await api.recordFeeding(aquariumAtRequest, item.op, item.fishId, item.bites);
         if (stale(gen)) return { ok: false, skipped: 'stale' };
         if (res.ok) {
-          feedQueue = feedQueue.filter((f) => f.op !== item.op);
-          sent += 1;
+          feedQueue = feedQueue.filter(f => f.op !== item.op);
+          persistFeeds(); // Commit each acknowledgement, not just the last batch.
+          sent++;
           continue;
         }
         const result = res.result || {};
         if (result.kind === 'unauthenticated' || result.kind === 'forbidden') {
-          persistFeeds();
           setStatus(STATUS.SIGNED_OUT, result.message || '');
           return { ok: false, result };
         }
-        if (result.kind === 'invalid_argument' || result.kind === 'invalid_state') {
-          // 例如鱼已经不在这缸里：丢掉这条事件，不让一条坏记录卡住整个队列。
-          feedQueue = feedQueue.filter((f) => f.op !== item.op);
+        if (['invalid_argument', 'invalid_state'].includes(result.kind) ||
+            (result.kind === 'not_found' && !getState().fish.some(f => f.id === item.fishId))) {
+          feedQueue = feedQueue.filter(f => f.op !== item.op);
           persistFeeds();
           notify(result.message || '有一条进食记录无法确认，已跳过。');
           continue;
@@ -281,9 +291,10 @@ export function createSyncEngine({
         setStatus(isOnline() ? STATUS.ERROR : STATUS.OFFLINE, result.message || '');
         return { ok: false, result, retryable: true };
       }
-      persistFeeds();
       return { ok: true, sent };
-    })().finally(() => { pushingFeeds = null; });
+    }).finally(() => {
+      if (pushingFeeds === operation) pushingFeeds = null;
+    });
     pushingFeeds = operation;
     return operation;
   }
@@ -297,6 +308,7 @@ export function createSyncEngine({
     clearSaveTimer();
     clearFeedTimer();
     feedQueue = [];
+    pushingFeeds = null;
     inFlight = null; queued = false; conflict = null;
     settleToken += 1; settling = false; settlePromise = null;
     session = nextSession && nextSession.user && nextSession.user.id ? nextSession : null;
@@ -404,7 +416,7 @@ export function createSyncEngine({
       if (guestState && canonicalState(guestState) !== canonicalState(cloudParsed)) {
         notify('本机鱼缸已上传到云端，之后换设备登录就能接着养。');
       }
-      const settled = await settleAndAdopt({ gen, reason: 'created' });
+      const settled = await finishHydration({ gen, reason: 'created' });
       return { ...settled, created: true };
     }
 
@@ -417,7 +429,7 @@ export function createSyncEngine({
         const uploaded = await flush({ reason: 'pending-upload', gen });
         if (stale(gen)) return { ok: false, skipped: 'stale' };
         if (!uploaded.ok) return uploaded;             // 冲突/离线等已在 flush 内处理
-        return settleAndAdopt({ gen, reason: 'pending-upload' });
+        return finishHydration({ gen, reason: 'pending-upload' });
       }
       return raiseConflict({
         reason: CONFLICT_REASON.PENDING,
@@ -439,7 +451,16 @@ export function createSyncEngine({
     }
 
     adopt(cloudParsed, cloudRevision);
-    return settleAndAdopt({ gen, reason: 'hydrate' });
+    return finishHydration({ gen, reason: 'hydrate' });
+  }
+
+  async function finishHydration({ gen, reason }) {
+    if (feedQueue.length) {
+      const pushed = await pushFeeds(gen);
+      if (stale(gen)) return { ok: false, skipped: 'stale' };
+      if (!pushed.ok) return pushed;
+    }
+    return settleAndAdopt({ gen, reason });
   }
 
   /**
@@ -507,12 +528,15 @@ export function createSyncEngine({
         lastGrowthAt = settled.result.lastGrowthAt || lastGrowthAt;
         const uid = userId();
         if (uid && aquariumId) store.writeCurrent(uid, { aquariumId, revision: baseRevision, lastGrowthAt });
-        setStatus(STATUS.SYNCED);
+        setStatus(feedQueue.length ? STATUS.SYNCING : STATUS.SYNCED);
         return { ok: true, creditedSeconds: settled.result.creditedSeconds || 0, revision: baseRevision, reason };
       } finally {
         if (settleToken === token) {
           settling = false;
           settlePromise = null;
+          // A feed debounce may have elapsed while it was waiting for this
+          // settlement. Keep those events visible and schedule their next pass.
+          if (feedQueue.length && feedTimer === null && gen === generation && !disposed && !conflict) scheduleFeeds();
           if (queued && gen === generation) {
             queued = false;
             if (!disposed && !conflict && isDirty()) {
@@ -573,7 +597,7 @@ export function createSyncEngine({
     if (baseCanonical !== null && canonical === baseCanonical) {
       const wasWaiting = timer !== null;
       clearSaveTimer();          // 撤销尚未发出的无意义写入
-      if (wasWaiting && !inFlight && !settling) setStatus(STATUS.SYNCED);
+      if (wasWaiting && !inFlight && !settling && !feedQueue.length) setStatus(STATUS.SYNCED);
       return false;
     }
     if (!isOnline()) {
@@ -596,15 +620,6 @@ export function createSyncEngine({
     if (conflict) return { ok: false, skipped: 'conflict' };
     if (settling) { queued = true; return { ok: true, skipped: 'settling' }; }
     if (inFlight) { queued = true; return inFlight; }
-
-    // 先把「已经吃到嘴里」的进食事件补交（幂等）。失败不阻塞存档写入：
-    // 事件仍留在本机队列里，下次同步会重试。
-    if (feedQueue.length && isOnline()) {
-      const pushed = await pushFeeds(gen);
-      if (stale(gen)) return { ok: false, skipped: 'stale' };
-      const kind = pushed.result?.kind;
-      if (kind === 'unauthenticated' || kind === 'forbidden') return { ok: false, result: pushed.result, reason };
-    }
 
     const state = cloneState(getState());
     const canonical = canonicalState(state);
@@ -640,7 +655,7 @@ export function createSyncEngine({
           scheduleSave();
           setStatus(STATUS.SYNCING);
         } else {
-          setStatus(STATUS.SYNCED);
+          setStatus(feedQueue.length ? STATUS.SYNCING : STATUS.SYNCED);
         }
         return { ok: true, revision: baseRevision, reason };
       }
@@ -771,9 +786,14 @@ export function createSyncEngine({
    * 会被本机的旧快照覆盖，而且界面还显示「已同步」。
    */
   async function syncNow({ reason = 'manual', gen = generation } = {}) {
-    if (disposed) return { ok: false, skipped: 'disposed' };
+    if (stale(gen)) return { ok: false, skipped: 'stale' };
     if (mode !== 'cloud') return { ok: true, skipped: 'guest' };
     if (conflict) return { ok: false, skipped: 'conflict' };
+    if (settling) {
+      const res = await settlePromise;
+      if (stale(gen)) return { ok: false, skipped: 'stale' };
+      return res;
+    }
     const hydration = hydrationPromises.get(gen);
     if (hydration) return hydration;
     if (!aquariumId || baseRevision === null || baseCanonical === null) return hydrate({ gen });
@@ -784,18 +804,23 @@ export function createSyncEngine({
       if (!res.ok) return res;
     }
 
-    // 进食事件优先补交：服务端在 settle 里统一结算营养成长（幂等、可重试）。
-    if (feedQueue.length && isOnline()) {
-      const pushed = await pushFeeds(gen);
-      if (stale(gen)) return { ok: false, skipped: 'stale' };
-      const kind = pushed.result?.kind;
-      if (kind === 'unauthenticated' || kind === 'forbidden') return { ok: false, result: pushed.result };
-    }
-
+    // First persist new fish/edits against the known revision. Feeding an unsaved
+    // fish otherwise returns not_found and blocks its entire queue.
     if (isDirty()) {
       const res = await flush({ reason, gen });
       if (stale(gen)) return { ok: false, skipped: 'stale' };
-      if (!res.ok) return res;               // 冲突/离线等：保留副本并如实报告
+      if (!res.ok) return res;
+    }
+    if (feedQueue.length) {
+      const pushed = await pushFeeds(gen);
+      if (stale(gen)) return { ok: false, skipped: 'stale' };
+      if (!pushed.ok) return pushed;
+    }
+    // Editing while feed acknowledgements arrive must also be saved before settle.
+    if (isDirty()) {
+      const res = await flush({ reason, gen });
+      if (stale(gen)) return { ok: false, skipped: 'stale' };
+      if (!res.ok) return res;
     }
     return settleAndAdopt({ gen, reason });
   }

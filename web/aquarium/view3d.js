@@ -480,6 +480,14 @@ export function createView3D({
     return { x: event.clientX - rect.left, y: event.clientY - rect.top, width: rect.width, height: rect.height };
   }
 
+  const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  function floorAt(px, py, rect) {
+    if (!scene3d) return null;
+    pointer.set((px / rect.width) * 2 - 1, -(py / rect.height) * 2 + 1);
+    raycaster.setFromCamera(pointer, scene3d.camera);
+    return raycaster.ray.intersectPlane(floorPlane, new THREE.Vector3());
+  }
+
   function pickAt(px, py, rect) {
     if (!scene3d) return null;
     pointer.x = (px / rect.width) * 2 - 1;
@@ -489,7 +497,7 @@ export function createView3D({
     const decorHits = raycaster.intersectObjects([...decorNodes.values()].map((n) => n.group), true);
     const fishHit = fishHits[0];
     const decorHit = decorHits[0];
-    if (fishHit && (!decorHit || fishHit.distance <= decorHit.distance)) {
+    if (mode === 'view' && fishHit && (!decorHit || fishHit.distance <= decorHit.distance)) {
       let obj = fishHit.object;
       while (obj && !obj.userData?.fishId) obj = obj.parent;
       if (obj) return { kind: 'fish', id: obj.userData.fishId };
@@ -523,6 +531,8 @@ export function createView3D({
       }
       const p = getPointer(event);
       const hit = pickAt(p.x, p.y, p);
+      const floorStart = floorAt(p.x, p.y, p);
+      const decorNode = hit?.kind === 'decor' ? decorNodes.get(hit.id) : null;
       dragState = {
         pointerId: event.pointerId,
         startX: event.clientX, startY: event.clientY,
@@ -531,7 +541,7 @@ export function createView3D({
         hit,
         dragging: false,
         mode,
-        anchor: hit?.kind === 'decor' && mode === 'decor' ? { x: hit.point.x, z: hit.point.z } : null
+        anchor: decorNode && floorStart ? { x: decorNode.group.position.x - floorStart.x, z: decorNode.group.position.z - floorStart.z } : { x: 0, z: 0 }
       };
       if (mode === 'decor' && hit?.kind === 'decor') {
         selectDecor(hit.id);
@@ -558,16 +568,13 @@ export function createView3D({
 
       if (mode === 'decor' && dragState.hit?.kind === 'decor' && dragState.dragging) {
         const rect = canvas.getBoundingClientRect();
-        const hit = pickAt(event.clientX - rect.left, event.clientY - rect.top, rect);
-        if (hit?.kind === 'water' || hit?.kind === 'decor') {
-          const node = decorNodes.get(dragState.hit.id);
-          if (node) {
-            const nx = hit.kind === 'water' ? hit.x : clamp(node.group.position.x / (TANK.width * 0.9) + 0.5, 0, 1);
-            const nz = hit.kind === 'water' ? hit.z : clamp(node.group.position.z / (TANK.depth * 0.82) + 0.5, 0, 1);
-            onDecorMove(dragState.hit.id, { x: clamp(nx, 0.03, 0.97), z: clamp(nz, 0.03, 0.97) }, false);
-            node.group.position.set((nx - 0.5) * TANK.width * 0.9, 0, (nz - 0.5) * TANK.depth * 0.82);
-            updateSelectionRing();
-          }
+        const point = floorAt(event.clientX - rect.left, event.clientY - rect.top, rect);
+        const node = decorNodes.get(dragState.hit.id);
+        if (point && node) {
+          const nx = clamp((point.x + dragState.anchor.x) / (TANK.width * 0.9) + 0.5, 0.03, 0.97);
+          const nz = clamp((point.z + dragState.anchor.z) / (TANK.depth * 0.82) + 0.5, 0.03, 0.97);
+          onDecorMove(dragState.hit.id, { x: nx, z: nz }, false);
+          updateSelectionRing();
         }
         return;
       }
@@ -588,7 +595,6 @@ export function createView3D({
         if (node) {
           const nx = clamp(node.group.position.x / (TANK.width * 0.9) + 0.5, 0, 1);
           const nz = clamp(node.group.position.z / (TANK.depth * 0.82) + 0.5, 0, 1);
-          onDecorMove(stateSnapshot.hit.id, { x: nx, z: nz }, true);
           onDecorCommit(stateSnapshot.hit.id, { x: nx, z: nz });
         }
         return;
@@ -634,7 +640,6 @@ export function createView3D({
             const nx = clamp(node.group.position.x / (TANK.width * 0.9) + 0.5 + dx, 0.03, 0.97);
             const nz = clamp(node.group.position.z / (TANK.depth * 0.82) + 0.5 + dz, 0.03, 0.97);
             node.group.position.set((nx - 0.5) * TANK.width * 0.9, 0, (nz - 0.5) * TANK.depth * 0.82);
-            onDecorMove(selection, { x: nx, z: nz }, true);
             onDecorCommit(selection, { x: nx, z: nz });
             updateSelectionRing();
           }

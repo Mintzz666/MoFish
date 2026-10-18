@@ -246,9 +246,9 @@ set search_path = public, pg_temp
 as $$
 declare
   v_uid    uuid := auth.uid();
-  v_ok     boolean;
   v_recent integer;
   v_row_id uuid;
+  v_existing public.mofish_feed_events%rowtype;
 begin
   if v_uid is null then
     return query select 'not_authenticated', 0, false, 'not_authenticated'::text;
@@ -263,19 +263,29 @@ begin
   end if;
 
   -- 归属 + 鱼必须确实在这条鱼缸里（不区分「不存在」与「不是我的」，避免泄露）
-  select exists (
-    select 1
-      from public.aquariums a
-     where a.id = p_id
-       and a.owner_id = v_uid
-       and exists (
-         select 1 from jsonb_array_elements(a.state_json->'fish') f
-          where f->>'id' = p_fish_id
-       )
-  ) into v_ok;
+  -- Use the same aquarium row lock as settlement/save: checking the daily
+  -- limit and accepting a feeding event must be atomic across connections.
+  perform 1
+    from public.aquariums a
+   where a.id = p_id and a.owner_id = v_uid
+     and exists (select 1 from jsonb_array_elements(a.state_json->'fish') f where f->>'id' = p_fish_id)
+   for update;
 
-  if not v_ok then
+  if not found then
     return query select 'not_found', 0, false, 'fish_or_aquarium_not_found'::text;
+    return;
+  end if;
+
+  -- Confirm an acknowledged request before rate limiting its retries. Reusing
+  -- the ID with a different payload is not an idempotent retry.
+  select * into v_existing from public.mofish_feed_events e
+   where e.aquarium_id = p_id and e.operation_id = p_operation_id;
+  if found then
+    if v_existing.fish_id <> p_fish_id or v_existing.bites <> p_bites then
+      return query select 'invalid_argument', 0, false, 'operation_mismatch'::text;
+    else
+      return query select 'ok', 0, true, null::text;
+    end if;
     return;
   end if;
 

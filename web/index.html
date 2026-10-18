@@ -18,9 +18,9 @@
 <main>
   <section class="intro">
     <div>
-      <p class="eyebrow">A LITTLE WORLD, A LITTLE PAUSE</p>
-      <h1>把时间，交给小鱼。</h1>
-      <p class="subtitle">不赶时间，不必打卡。看看鱼，摆弄一下水草，发一会儿呆。</p>
+      <p class="eyebrow">A SMALL GARDEN, A SLOWER DAY</p>
+      <h1>把日常，调慢一点。</h1>
+      <p class="subtitle">养几条小鱼，种一片水草。让心情慢慢舒展。</p>
     </div>
     <div class="intro-note">
       <span class="live-dot" aria-hidden="true"></span>
@@ -28,6 +28,7 @@
     </div>
   </section>
 
+  <div class="aquarium-caption"><span><i aria-hidden="true"></i> 我的水下花园</span><small id="aquarium-count">小鱼与水草，正在慢慢生长</small></div>
   <section class="stage" id="aquarium" aria-label="互动鱼缸">
     <canvas id="tank" tabindex="0" aria-label="鱼缸：观赏时轻触水面喂食、点鱼查看；布景时可拖动水草、石头和沉木；按空格投食"></canvas>
     <div class="stage-top">
@@ -48,6 +49,23 @@
         <button type="button" class="icon-button" id="fullscreen" title="全屏" aria-label="全屏查看鱼缸">⤢</button>
       </div>
     </div>
+    <div class="decor-float" id="decor-float" role="group" aria-label="选中造景的操作" hidden>
+    <span class="decor-float-name" id="decor-float-name">青龙石</span>
+    <button type="button" class="chip-button" data-decor-action="rotate">转向</button>
+    <button type="button" class="chip-button" data-decor-action="scale-down">小一点</button>
+    <button type="button" class="chip-button" data-decor-action="scale-up">大一点</button>
+    <button type="button" class="chip-button" data-decor-action="reshuffle">换个造型</button>
+    <button type="button" class="chip-button" data-decor-action="undo">撤销</button>
+    <button type="button" class="chip-button danger" data-decor-action="delete">移走</button>
+    <div class="decor-nudges" role="group" aria-label="微调造景位置">
+      <button type="button" class="chip-button" data-decor-nudge="-0.025,0" aria-label="向左移动">←</button>
+      <button type="button" class="chip-button" data-decor-nudge="0,-0.025" aria-label="向后移动">↑</button>
+      <button type="button" class="chip-button" data-decor-nudge="0,0.025" aria-label="向前移动">↓</button>
+      <button type="button" class="chip-button" data-decor-nudge="0.025,0" aria-label="向右移动">→</button>
+    </div>
+    <button type="button" class="solid small" id="float-confirm" hidden>放在这里</button>
+    <button type="button" class="chip-button" id="float-cancel" hidden>取消</button>
+  </div>
     <p class="stage-tip" id="tank-tip">轻触水面就能投食；布景模式里可以挪动水草和石头。</p>
     <div class="stage-footer">
       <span class="live-dot" aria-hidden="true"></span>
@@ -73,7 +91,7 @@
     <div class="panel" id="fish-panel" aria-live="polite">
       <div class="panel-head">
         <p class="eyebrow">LITTLE COMPANION</p>
-        <h2 id="panel-title">今天，也一起慢慢长大。</h2>
+        <h2 id="panel-title">每一条，都有自己的节奏。</h2>
       </div>
       <div id="panel-empty" class="panel-empty">点一条鱼，看看它多大了；或者从下面的小伙伴里选一条。</div>
       <div id="fish-detail" class="detail" hidden>
@@ -121,27 +139,16 @@
           <button type="button" class="solid small" id="decor-confirm">放在这里</button>
           <button type="button" class="ghost-button small" id="decor-cancel">取消</button>
         </div>
-        <p class="note" id="decor-hint">拖动改变位置；方向键微调，Shift 加速。手机可用上面的按钮。</p>
+        <p class="note" id="decor-hint">拖动改变位置；方向键微调，Shift 加速。也可用鱼缸内的方向按钮微调位置。</p>
       </div>
     </div>
   </section>
 
-  <div class="decor-float" id="decor-float" hidden>
-    <span class="decor-float-name" id="decor-float-name">青龙石</span>
-    <button type="button" class="chip-button" data-decor-action="rotate">转向</button>
-    <button type="button" class="chip-button" data-decor-action="scale-down">小一点</button>
-    <button type="button" class="chip-button" data-decor-action="scale-up">大一点</button>
-    <button type="button" class="chip-button" data-decor-action="reshuffle">换个造型</button>
-    <button type="button" class="chip-button" data-decor-action="undo">撤销</button>
-    <button type="button" class="chip-button danger" data-decor-action="delete">移走</button>
-    <button type="button" class="solid small" id="float-confirm" hidden>放在这里</button>
-    <button type="button" class="chip-button" id="float-cancel" hidden>取消</button>
-  </div>
 
   <section class="below">
     <div class="companions">
       <p class="eyebrow">LITTLE COMPANIONS</p>
-      <h2>今天，也一起慢慢长大。</h2>
+      <h2>每一条，都有自己的节奏。</h2>
       <div id="fish-list" class="fish-list"></div>
     </div>
     <aside class="aside-card">

@@ -55,7 +55,7 @@ Cloudflare 可复用 Tibo 所用账号，为 MoFish 建独立 Worker `mofish`，
 阶段 B 新增第三份迁移 `20261018120000_phase_b_growth_and_aquascaping.sql`（v2 存档校验、四阶段结算、
 进食记账表 `mofish_feed_events` 与 `record_feeding`）。**它还没有应用到任何项目**。
 升级顺序必须是：先在目标项目应用这份迁移，再部署 v2 前端；顺序反了会拒绝 v2 写入（客户端保留本机副本，不丢档）。
-回滚见 `supabase/rollback/0002_phase_b_growth.down.sql`。
+回滚见 `supabase/rollback/0002_phase_b_growth.down.sql`：先停止 v2 写入、导出备份并明确转换现有 v2 存档；脚本在显式事务中首先检查残留 v2 行，未转换则拒绝，避免先删除事件表再失败。
 
 需要为另一个全新项目部署时，先确认目标项目，再按文件名顺序应用这些迁移；推荐通过 CLI
 记录迁移历史（不要对当前项目重新初始化）：
@@ -257,7 +257,7 @@ psql "postgresql://.../postgres" -c "\copy (select * from public.aquariums) to '
 - **官方认证 SDK 随站点发布**：`@supabase/auth-js` 在构建期打包到同源静态资源，不使用外部 CDN。
   应用 facade 用会话代次和令牌检查保护账号切换，SDK 不直接写应用的 localStorage。
 - **公开 key 会出现在网页里**，这是设计如此：真正的边界是数据库权限与 RLS。客户端**没有任何表级写权限**，
-  所有写入只能经过三个 `SECURITY DEFINER` 函数；函数内部按 `auth.uid()` 过滤归属并做参数/结构校验，
+  A 的写入经三个 `SECURITY DEFINER` 函数，B 另加受控的 `record_feeding`；函数内部按 `auth.uid()` 过滤归属并做参数/结构校验，
   越权请求在数据库层被拒绝。
 - **邮件回调**：验证/重置链接把令牌放在 URL 片段里，前端读取后立刻 `history.replaceState` 清除；
   并且必须先用 `GET /auth/v1/user` 确认身份才落盘会话——否则会出现「界面显示已登录、同步引擎却是游客」的错位。

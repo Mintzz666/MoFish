@@ -20,6 +20,7 @@ import { parseAuthCallback } from './cloud/auth.js';
 import { createAccountUI } from './ui/account.js';
 import { createView3D } from './aquarium/view3d.js';
 import { createView2D } from './view2d.js';
+import { createDecorHistory } from './decor-history.js';
 
 const $ = (id) => document.getElementById(id);
 const bootAt = typeof performance !== 'undefined' ? performance.now() : 0;
@@ -82,7 +83,7 @@ let selectedDecorId = null;
 let pendingDecorId = null;
 let lastDragDecorId = null;
 let toastTimer;
-const undoStack = [];
+const undoStack = createDecorHistory({ getScope: () => engine.generation });
 let lastStatusMessage = '';
 let resizeObserver = null;
 let switchingRenderer = false;
@@ -159,6 +160,7 @@ function setRenderer(kind, { silent = false } = {}) {
     view = createView(kind);
   } catch (err) {
     if (kind === '3d') {
+      replaceCanvas();
       viewMode = '2d';
       view = createView('2d');
       if (!silent) toast('这台设备暂时无法使用 3D，已用 2D 模式打开。');
@@ -170,7 +172,7 @@ function setRenderer(kind, { silent = false } = {}) {
   view.setNight(state.night);
   writePrefs({ renderer: viewMode });
   updateRendererChrome();
-  applyEditMode(editMode === 'decor' && viewMode === '3d');
+  applyEditMode(editMode === 'decor' && viewMode === '3d' ? 'decor' : 'view');
   if (selectedDecorId) view.selectDecor?.(selectedDecorId);
   switchingRenderer = false;
 }
@@ -178,16 +180,9 @@ function setRenderer(kind, { silent = false } = {}) {
 /** 换一块新 canvas 重建 3D 视图：同一个 canvas 无法同时/重复申请 WebGL 上下文。 */
 function recreate3D() {
   if (viewMode !== '3d') return;
-  switchingRenderer = true;
-  disposeView();
-  replaceCanvas();
-  view = createView('3d');
-  view.setState(state);
-  view.setNight(state.night);
-  updateRendererChrome();
-  applyEditMode(editMode === 'decor');
-  if (selectedDecorId) view.selectDecor?.(selectedDecorId);
-  switchingRenderer = false;
+  // Reuse the guarded initialization/fallback path, with a fresh canvas.
+  viewMode = null;
+  setRenderer('3d');
 }
 
 function updateRendererChrome() {
@@ -205,6 +200,7 @@ function updateRendererChrome() {
 
 function applyEditMode(next) {
   editMode = next;
+  $('aquarium').dataset.mode = next;
   $('mode-view').setAttribute('aria-selected', String(next === 'view'));
   $('mode-decor').setAttribute('aria-selected', String(next === 'decor'));
   view?.setMode?.(next);
@@ -320,17 +316,16 @@ function feed() {
 
 // ------------------------------------------------------------------ 布景编辑
 function pushUndo() {
-  // 存整份快照（不是 canonicalState 指纹），撤销时能直接恢复上一份合法存档。
-  undoStack.push(JSON.stringify(cloneState(state)));
-  if (undoStack.length > 20) undoStack.shift();
+  undoStack.push(state);
   refreshDecorPanel();
 }
 
 function restoreFromUndo() {
-  const snapshot = undoStack.pop();
-  if (!snapshot) { toast('没有可以撤销的操作了。'); return; }
   try {
-    const next = validate(JSON.parse(snapshot));
+    const next = undoStack.restore(state);
+    if (!next) { refreshDecorPanel(); toast('没有可以撤销的操作了。'); return; }
+    pendingDecorId = null;
+    lastDragDecorId = null;
     applyState(next);
     save();
     toast('已撤销上一步布景操作。');
@@ -439,6 +434,7 @@ function cancelPendingDecor() {
   selectedDecorId = null;
   view?.selectDecor?.(null);
   applyState(next);
+  save();
   refreshDecorPanel();
 }
 
@@ -472,6 +468,7 @@ function describeStage(growth) {
 }
 
 function refreshAll() {
+  $('aquarium').dataset.night = String(state.night);
   refreshCounters();
   refreshFishList();
   refreshPanels();
@@ -485,6 +482,7 @@ function refreshCounters() {
   const plants = state.decor.filter((d) => d.kind === 'plant').length;
   const rocks = state.decor.filter((d) => d.kind === 'rock').length;
   const woods = state.decor.filter((d) => d.kind === 'wood').length;
+  $('aquarium-count').textContent = `${state.fish.length} 条小鱼 · ${state.decor.length} 件造景`;
   $('fish-counter').textContent = `${state.fish.length} / ${MAX_FISH} 位小伙伴`;
   $('add-fish').disabled = state.fish.length >= MAX_FISH;
   $('plant-counter').textContent = `水草 ${plants} / ${KIND_META.plant.max}`;
@@ -531,7 +529,7 @@ function refreshFishPanel() {
   const fish = selectedFish();
   $('fish-detail').hidden = !fish;
   $('panel-empty').hidden = Boolean(fish);
-  $('panel-title').textContent = fish ? fish.name : '今天，也一起慢慢长大。';
+  $('panel-title').textContent = '小鱼的成长手记';
   if (!fish) return;
   const a = fishAppearance(fish);
   const stage = describeStage(fish.growth);
@@ -580,7 +578,7 @@ function refreshDecorPanel() {
   $('decor-state').textContent = isPending ? '待确认' : '已选中';
   $('decor-title').textContent = isPending ? '这个造型可以吗？' : '正在编辑这一件。';
   $('decor-pending-actions').hidden = !isPending;
-  // 浮动工具条固定在视口底部：小屏上面板可能在折叠区，确认/取消也必须看得见。
+  // 浮动工具条位于鱼缸内底部：小屏上面板可能在折叠区，确认/取消也必须看得见。
   floatBar.hidden = !(editMode === 'decor' && item);
   if (item) $('decor-float-name').textContent = `${typeName} · ${isPending ? '待确认' : '已选中'}`;
   $('float-confirm').hidden = !isPending;
@@ -697,12 +695,23 @@ for (const btn of floatBar.querySelectorAll('[data-decor-action]')) {
     if (target && !target.disabled) target.click();
   };
 }
+document.querySelectorAll('[data-decor-nudge]').forEach(button => {
+  button.onclick = () => {
+    const item = state.decor.find(d => d.id === selectedDecorId);
+    if (!item) return;
+    const [dx, dz] = button.dataset.decorNudge.split(',').map(Number);
+    pushUndo();
+    applyState(updateDecor(state, item.id, { x: item.x + dx, z: item.z + dz }).state);
+    save();
+  };
+});
 $('float-confirm').onclick = () => { if (!$('decor-confirm').disabled) $('decor-confirm').click(); };
 $('float-cancel').onclick = () => $('decor-cancel').click();
 $('detail-rename').onclick = () => openFishDialog(activeFishId);
 
 // 键盘：Ctrl/⌘+Z 撤销布景编辑；Esc 退出布景选择
 document.addEventListener('keydown', (event) => {
+  if (event.target.closest?.('input, textarea, select, [contenteditable="true"], dialog[open]')) return;
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z' && editMode === 'decor') {
     event.preventDefault();
     restoreFromUndo();
@@ -793,7 +802,7 @@ $('import-file').onchange = async (event) => {
     if (!hasSession) catchUp(next);
     selectedDecorId = null;
     pendingDecorId = null;
-    undoStack.length = 0;
+    undoStack.clear();
     applyState(next);
     if (audioCtx) await audioCtx.suspend();
     const persisted = save();
@@ -817,6 +826,10 @@ accountUI = createAccountUI({
       catchUp(guest);
       applyState(guest);
     }
+    undoStack.clear();
+    selectedDecorId = null;
+    pendingDecorId = null;
+    activeFishId = null;
     refreshAll();
   }
 });
