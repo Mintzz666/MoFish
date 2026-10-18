@@ -565,6 +565,11 @@ function refreshDecorPanel() {
   if (!item) {
     $('decor-title').textContent = editMode === 'decor' ? '点一件水草或石头开始摆。' : '摆一摆，让水底更自然。';
     floatBar.hidden = true;
+    // 取消/移走后要清掉所有「待确认」痕迹，否则按钮会残留一行
+    $('decor-pending-actions').hidden = true;
+    $('float-confirm').hidden = true;
+    $('float-cancel').hidden = true;
+    $('decor-state').textContent = '';
     return;
   }
   const meta = KIND_META[item.kind];
@@ -676,6 +681,24 @@ $('decor-delete').onclick = () => deleteSelectedDecor();
 $('decor-undo').onclick = () => restoreFromUndo();
 $('decor-confirm').onclick = () => confirmPendingDecor();
 $('decor-cancel').onclick = () => cancelPendingDecor();
+
+// 布景浮动工具条：动作转交给面板里的同名按钮，逻辑只有一份（面板在小屏上可能在折叠区）。
+const FLOAT_ACTION_TARGETS = {
+  rotate: 'decor-rotate',
+  'scale-down': 'decor-scale-down',
+  'scale-up': 'decor-scale-up',
+  reshuffle: 'decor-reshuffle',
+  undo: 'decor-undo',
+  delete: 'decor-delete'
+};
+for (const btn of floatBar.querySelectorAll('[data-decor-action]')) {
+  btn.onclick = () => {
+    const target = $(FLOAT_ACTION_TARGETS[btn.dataset.decorAction]);
+    if (target && !target.disabled) target.click();
+  };
+}
+$('float-confirm').onclick = () => { if (!$('decor-confirm').disabled) $('decor-confirm').click(); };
+$('float-cancel').onclick = () => $('decor-cancel').click();
 $('detail-rename').onclick = () => openFishDialog(activeFishId);
 
 // 键盘：Ctrl/⌘+Z 撤销布景编辑；Esc 退出布景选择

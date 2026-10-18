@@ -28,63 +28,63 @@ export const FISH_TYPES = [
     body: { len: 0.62, depth: 0.54, width: 0.52, head: 0.62, belly: 0.58, peduncle: 0.3, arch: 0.16 },
     fins: { tail: 'veil', tailSize: 0.46, dorsal: 'long', dorsalSize: 0.36, anal: 0.26, pectoral: 0.30, pelvic: 0.16, barbels: 0 },
     motion: { speed: 0.42, wag: 0.85, freq: 2.0, turn: 1.4, depthBias: 0.52, bob: 0.10 },
-    palette: { hue: [34, 44], sat: [0.52, 0.66], light: [0.46, 0.56], accentHue: 20, accentSat: [0.45, 0.6], patterns: ['gradient', 'stripe'] }
+    palette: { hue: [34, 44], sat: [0.72, 0.86], light: [0.52, 0.61], accentHue: 24, accentSat: [0.56, 0.7], patterns: ['gradient', 'stripe'] }
   },
   {
     id: 'mint', name: '薄荷青', note: '细长轻快，喜欢在水流里穿来穿去',
     body: { len: 0.46, depth: 0.28, width: 0.38, head: 0.78, belly: 0.5, peduncle: 0.3, arch: 0.06 },
     fins: { tail: 'fork', tailSize: 0.36, dorsal: 'tri', dorsalSize: 0.20, anal: 0.14, pectoral: 0.18, pelvic: 0.10, barbels: 2 },
     motion: { speed: 1.0, wag: 0.55, freq: 4.2, turn: 3.0, depthBias: 0.64, bob: 0.05 },
-    palette: { hue: [156, 172], sat: [0.34, 0.46], light: [0.46, 0.56], accentHue: 186, accentSat: [0.3, 0.42], patterns: ['stripe', 'plain', 'spot'] }
+    palette: { hue: [156, 174], sat: [0.54, 0.66], light: [0.52, 0.61], accentHue: 188, accentSat: [0.38, 0.5], patterns: ['stripe', 'plain', 'spot'] }
   },
   {
     id: 'moon', name: '月光银', note: '高身薄片，慢慢滑过水草上方',
     body: { len: 0.66, depth: 0.7, width: 0.32, head: 0.5, belly: 0.46, peduncle: 0.15, arch: 0.2 },
     fins: { tail: 'veil', tailSize: 0.42, dorsal: 'long', dorsalSize: 0.72, anal: 0.55, pectoral: 0.26, pelvic: 0.14, barbels: 2 },
     motion: { speed: 0.38, wag: 0.4, freq: 1.5, turn: 1.1, depthBias: 0.56, bob: 0.04 },
-    palette: { hue: [188, 208], sat: [0.17, 0.25], light: [0.62, 0.70], accentHue: 212, accentSat: [0.12, 0.2], patterns: ['plain', 'band'] }
+    palette: { hue: [188, 208], sat: [0.32, 0.42], light: [0.68, 0.75], accentHue: 212, accentSat: [0.16, 0.24], patterns: ['plain', 'band'] }
   },
   {
     id: 'coral', name: '珊瑚粉', note: '圆滚滚的小个子，尾巴一收一放',
     body: { len: 0.5, depth: 0.56, width: 0.46, head: 0.6, belly: 0.55, peduncle: 0.3, arch: 0.12 },
     fins: { tail: 'round', tailSize: 0.28, dorsal: 'tri', dorsalSize: 0.3, anal: 0.24, pectoral: 0.26, pelvic: 0.14, barbels: 0 },
     motion: { speed: 0.48, wag: 0.7, freq: 2.2, turn: 1.7, depthBias: 0.5, bob: 0.09 },
-    palette: { hue: [8, 20], sat: [0.42, 0.56], light: [0.58, 0.66], accentHue: 348, accentSat: [0.3, 0.42], patterns: ['plain', 'gradient'] }
+    palette: { hue: [8, 20], sat: [0.64, 0.78], light: [0.62, 0.69], accentHue: 344, accentSat: [0.4, 0.52], patterns: ['plain', 'gradient'] }
   },
   {
     id: 'ribbon', name: '缎带青', note: '一条柔软的丝带，顺着水草边缘游',
     body: { len: 0.92, depth: 0.16, width: 0.5, head: 0.86, belly: 0.5, peduncle: 0.42, arch: 0.02 },
     fins: { tail: 'lance', tailSize: 0.22, dorsal: 'ridge', dorsalSize: 0.1, anal: 'ridge', analSize: 0.08, pectoral: 0.1, pelvic: 0, barbels: 4 },
     motion: { speed: 0.6, wag: 1.2, freq: 1.5, turn: 1.9, depthBias: 0.3, bob: 0.03 },
-    palette: { hue: [168, 188], sat: [0.38, 0.50], light: [0.32, 0.42], accentHue: 46, accentSat: [0.34, 0.46], patterns: ['stripe', 'plain'] }
+    palette: { hue: [166, 186], sat: [0.56, 0.68], light: [0.42, 0.52], accentHue: 48, accentSat: [0.42, 0.54], patterns: ['stripe', 'plain'] }
   },
   {
     id: 'puff', name: '团子', note: '圆球一样浮着，偶尔扇两下小翅膀',
     body: { len: 0.4, depth: 0.78, width: 0.66, head: 0.66, belly: 0.6, peduncle: 0.26, arch: 0.1 },
     fins: { tail: 'fan', tailSize: 0.24, dorsal: 'small', dorsalSize: 0.14, anal: 0.12, pectoral: 0.24, pelvic: 0.08, barbels: 0 },
     motion: { speed: 0.34, wag: 0.45, freq: 2.6, turn: 1.3, depthBias: 0.6, bob: 0.2 },
-    palette: { hue: [44, 58], sat: [0.38, 0.50], light: [0.50, 0.58], accentHue: 30, accentSat: [0.3, 0.42], patterns: ['spot', 'plain'] }
+    palette: { hue: [44, 58], sat: [0.60, 0.72], light: [0.57, 0.65], accentHue: 34, accentSat: [0.4, 0.52], patterns: ['spot', 'plain'] }
   },
   {
     id: 'fan', name: '罗扇', note: '高高的圆盘身形，转身像展开一把扇子',
     body: { len: 0.64, depth: 0.94, width: 0.3, head: 0.52, belly: 0.44, peduncle: 0.12, arch: 0.24 },
     fins: { tail: 'fan', tailSize: 0.34, dorsal: 'long', dorsalSize: 0.5, anal: 0.46, pectoral: 0.24, pelvic: 0.12, barbels: 0 },
     motion: { speed: 0.3, wag: 0.35, freq: 1.2, turn: 0.9, depthBias: 0.48, bob: 0.05 },
-    palette: { hue: [22, 34], sat: [0.46, 0.58], light: [0.42, 0.52], accentHue: 10, accentSat: [0.4, 0.52], patterns: ['band', 'stripe'] }
+    palette: { hue: [22, 34], sat: [0.66, 0.78], light: [0.50, 0.60], accentHue: 12, accentSat: [0.46, 0.58], patterns: ['band', 'stripe'] }
   },
   {
     id: 'dart', name: '飞梭', note: '流线型的快枪手，转弯也干净利落',
     body: { len: 0.44, depth: 0.3, width: 0.4, head: 0.74, belly: 0.5, peduncle: 0.3, arch: 0.05 },
     fins: { tail: 'fork', tailSize: 0.44, dorsal: 'tri', dorsalSize: 0.22, anal: 0.16, pectoral: 0.2, pelvic: 0.1, barbels: 0 },
     motion: { speed: 1.2, wag: 0.5, freq: 5.0, turn: 3.6, depthBias: 0.68, bob: 0.04 },
-    palette: { hue: [194, 214], sat: [0.44, 0.58], light: [0.40, 0.52], accentHue: 20, accentSat: [0.4, 0.55], patterns: ['stripe', 'spot'] }
+    palette: { hue: [194, 214], sat: [0.62, 0.76], light: [0.47, 0.57], accentHue: 26, accentSat: [0.46, 0.6], patterns: ['stripe', 'spot'] }
   },
   {
     id: 'whisker', name: '须影', note: '贴着沙面巡游，嘴边有几根细细的须',
     body: { len: 0.56, depth: 0.22, width: 0.55, head: 0.72, belly: 0.62, peduncle: 0.26, arch: 0.04 },
     fins: { tail: 'fork', tailSize: 0.3, dorsal: 'tri', dorsalSize: 0.18, anal: 0.14, pectoral: 0.2, pelvic: 0.12, barbels: 4 },
     motion: { speed: 0.36, wag: 0.5, freq: 2.0, turn: 1.5, depthBias: 0.12, bob: 0.02 },
-    palette: { hue: [28, 42], sat: [0.28, 0.40], light: [0.34, 0.44], accentHue: 18, accentSat: [0.24, 0.36], patterns: ['spot', 'saddle'] }
+    palette: { hue: [28, 42], sat: [0.48, 0.60], light: [0.43, 0.53], accentHue: 24, accentSat: [0.32, 0.44], patterns: ['spot', 'saddle'] }
   }
 ];
 
@@ -105,32 +105,32 @@ export const PLANT_TYPES = [
   {
     id: 'vallis', name: '细叶苦草', shape: 'blade',
     params: { blades: [14, 22], height: [0.78, 1.22], width: [0.038, 0.058], bend: [0.1, 0.36], spread: [0.07, 0.16] },
-    palette: { hue: [148, 166], sat: [0.34, 0.46], light: [0.26, 0.40] }
+    palette: { hue: [148, 166], sat: [0.46, 0.58], light: [0.30, 0.37] }
   },
   {
     id: 'anubias', name: '小榕', shape: 'rosette',
     params: { leaves: [6, 9], height: [0.24, 0.4], width: [0.1, 0.15], bend: [0.28, 0.56], spread: [0.07, 0.16] },
-    palette: { hue: [138, 156], sat: [0.36, 0.48], light: [0.26, 0.32] }
+    palette: { hue: [138, 156], sat: [0.48, 0.60], light: [0.30, 0.34] }
   },
   {
     id: 'rotala', name: '红松尾', shape: 'stem',
     params: { stems: [4, 7], height: [0.5, 0.82], leaves: [12, 20], width: [0.032, 0.05], bend: [0.05, 0.2], spread: [0.05, 0.12] },
-    palette: { hue: [4, 22], sat: [0.34, 0.48], light: [0.26, 0.34] }
+    palette: { hue: [4, 22], sat: [0.46, 0.60], light: [0.30, 0.34] }
   },
   {
     id: 'moss', name: '苔球', shape: 'moss',
     params: { blobs: [4, 7], height: [0.12, 0.24], width: [0.09, 0.15], bend: [0, 0], spread: [0.05, 0.12] },
-    palette: { hue: [86, 110], sat: [0.34, 0.44], light: [0.26, 0.32] }
+    palette: { hue: [86, 110], sat: [0.46, 0.56], light: [0.30, 0.34] }
   },
   {
     id: 'fern', name: '铁皇冠', shape: 'fern',
     params: { fronds: [7, 11], height: [0.38, 0.6], leaves: [8, 12], width: [0.06, 0.09], bend: [0.3, 0.62], spread: [0.06, 0.14] },
-    palette: { hue: [142, 158], sat: [0.32, 0.42], light: [0.26, 0.32] }
+    palette: { hue: [142, 158], sat: [0.44, 0.54], light: [0.30, 0.34] }
   },
   {
     id: 'carpet', name: '牛毛毡', shape: 'carpet',
     params: { needles: [44, 74], height: [0.09, 0.17], width: [0.009, 0.014], bend: [0.1, 0.3], spread: [0.26, 0.46] },
-    palette: { hue: [104, 126], sat: [0.38, 0.50], light: [0.26, 0.32] }
+    palette: { hue: [104, 126], sat: [0.50, 0.62], light: [0.30, 0.34] }
   }
 ];
 
@@ -141,27 +141,27 @@ export const ROCK_TYPES = [
   {
     id: 'seiryu', name: '青龙石', shape: 'ridged',
     params: { size: [0.34, 0.65], height: [0.8, 1.4], rough: [0.18, 0.34], detail: [2, 4] },
-    palette: { hue: [202, 218], sat: [0.17, 0.23], light: [0.26, 0.32] }
+    palette: { hue: [202, 218], sat: [0.29, 0.35], light: [0.30, 0.34] }
   },
   {
     id: 'lava', name: '火山岩', shape: 'porous',
     params: { size: [0.21, 0.42], height: [0.7, 1.1], rough: [0.3, 0.5], detail: [3, 6] },
-    palette: { hue: [14, 28], sat: [0.20, 0.28], light: [0.26, 0.32] }
+    palette: { hue: [14, 28], sat: [0.32, 0.40], light: [0.30, 0.34] }
   },
   {
     id: 'pebble', name: '溪卵石', shape: 'smooth',
     params: { size: [0.16, 0.34], height: [0.45, 0.72], rough: [0.06, 0.14], detail: [1, 2] },
-    palette: { hue: [34, 50], sat: [0.15, 0.21], light: [0.28, 0.40] }
+    palette: { hue: [34, 50], sat: [0.27, 0.33], light: [0.30, 0.37] }
   },
   {
     id: 'slate', name: '板岩', shape: 'layered',
     params: { size: [0.31, 0.57], height: [0.5, 0.9], rough: [0.16, 0.3], detail: [3, 5] },
-    palette: { hue: [210, 228], sat: [0.15, 0.21], light: [0.26, 0.32] }
+    palette: { hue: [210, 228], sat: [0.27, 0.33], light: [0.30, 0.34] }
   },
   {
     id: 'sandstone', name: '砂岩', shape: 'blocky',
     params: { size: [0.26, 0.55], height: [0.55, 0.95], rough: [0.22, 0.38], detail: [2, 4] },
-    palette: { hue: [36, 48], sat: [0.26, 0.36], light: [0.30, 0.42] }
+    palette: { hue: [36, 48], sat: [0.38, 0.48], light: [0.30, 0.39] }
   }
 ];
 
@@ -172,12 +172,12 @@ export const WOOD_TYPES = [
   {
     id: 'branch', name: '沉木枝', shape: 'branch',
     params: { length: [0.5, 0.86], girth: [0.035, 0.055], branches: [2, 4], height: [0.3, 0.62] },
-    palette: { hue: [24, 38], sat: [0.26, 0.36], light: [0.26, 0.32] }
+    palette: { hue: [24, 38], sat: [0.38, 0.48], light: [0.30, 0.34] }
   },
   {
     id: 'stump', name: '沉木桩', shape: 'stump',
     params: { length: [0.26, 0.42], girth: [0.08, 0.13], branches: [3, 5], height: [0.28, 0.46] },
-    palette: { hue: [22, 34], sat: [0.22, 0.30], light: [0.26, 0.32] }
+    palette: { hue: [22, 34], sat: [0.34, 0.42], light: [0.30, 0.34] }
   }
 ];
 

@@ -38,14 +38,14 @@ export const QUALITY = {
 };
 
 const DAY = {
-  bg: new THREE.Color('#dfeee9'),
-  fog: new THREE.Color('#cfe4dd'),
-  water: new THREE.Color('#a9d8cf'),
-  key: new THREE.Color('#fff4e2'),
-  fill: new THREE.Color('#bfe6df'),
-  hemiSky: new THREE.Color('#eaf7f2'),
-  hemiGround: new THREE.Color('#b6a68a'),
-  exposure: 0.98
+  bg: new THREE.Color('#e8f6ef'),
+  fog: new THREE.Color('#d8ecdf'),
+  water: new THREE.Color('#a2e2d1'),
+  key: new THREE.Color('#fff8ea'),
+  fill: new THREE.Color('#cdeee2'),
+  hemiSky: new THREE.Color('#f2fbf6'),
+  hemiGround: new THREE.Color('#c8b48f'),
+  exposure: 1.0
 };
 
 const NIGHT = {
@@ -273,10 +273,10 @@ export function createTankScene({ canvas, quality = 'high' }) {
 
   const wallMat = new THREE.MeshBasicMaterial({
     map: gradientTexture([
-      [0, '#5d968e'],
-      [0.35, '#3d7a72'],
-      [0.75, '#2a5f59'],
-      [1, '#1d4944']
+      [0, '#79c9b6'],
+      [0.35, '#4f9f90'],
+      [0.75, '#41857b'],
+      [1, '#2f6d66']
     ]),
     toneMapped: false,
     side: THREE.DoubleSide

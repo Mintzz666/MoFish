@@ -2,18 +2,18 @@
    断点：>=980 双栏面板；640-979 单栏；<640 手机（工具两列、布景按钮可点按）。 */
 
 :root {
-  --bg: #f5f7f3;
-  --bg-soft: #eef3ee;
-  --surface: #ffffff;
-  --ink: #18332f;
-  --ink-soft: #40574f;
-  --muted: #6b7f78;
-  --line: rgba(24, 51, 47, 0.1);
-  --line-strong: rgba(24, 51, 47, 0.18);
-  --accent: #2f6f63;
-  --accent-deep: #245750;
-  --accent-soft: #deece5;
-  --accent-warm: #c9a06a;
+  --bg: #fbf8ee;
+  --bg-soft: #f3f7ec;
+  --surface: #fffdf7;
+  --ink: #1b3a33;
+  --ink-soft: #3f5c51;
+  --muted: #5f7a6f;
+  --line: rgba(27, 58, 51, 0.1);
+  --line-strong: rgba(27, 58, 51, 0.18);
+  --accent: #1f8f7c;
+  --accent-deep: #15705f;
+  --accent-soft: #e1f3e7;
+  --accent-warm: #f0b45c;
   --danger: #9d4b45;
   --shadow: 0 18px 40px -28px rgba(20, 48, 44, 0.55);
   --radius: 20px;
@@ -27,8 +27,9 @@ html, body { margin: 0; padding: 0; }
 
 body {
   background:
-    radial-gradient(120% 60% at 12% -10%, rgba(206, 232, 219, 0.55), transparent 60%),
-    radial-gradient(90% 50% at 92% 0%, rgba(233, 240, 226, 0.7), transparent 55%),
+    radial-gradient(120% 62% at 10% -12%, rgba(190, 236, 214, 0.6), transparent 62%),
+    radial-gradient(80% 48% at 95% -4%, rgba(255, 224, 166, 0.55), transparent 58%),
+    radial-gradient(70% 40% at 50% 108%, rgba(214, 240, 226, 0.5), transparent 62%),
     var(--bg);
   color: var(--ink);
   line-height: 1.55;
@@ -165,7 +166,7 @@ main {
   max-height: 70vh;
   border-radius: var(--radius);
   overflow: hidden;
-  background: linear-gradient(160deg, #cfe6de, #a9cfc7 60%, #8fbcb4);
+  background: linear-gradient(160deg, #d7f0e4, #aee0d2 58%, #93cabc);
   box-shadow: var(--shadow), inset 0 0 0 1px rgba(255, 255, 255, 0.4);
   isolation: isolate;
 }

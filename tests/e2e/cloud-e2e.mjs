@@ -592,6 +592,22 @@ async function main() {
   const savedDecor = await devicePhaseB.evaluate(`JSON.parse(localStorage.getItem('mofish.v1')).decor.length`);
   check('布景改动写入本机存档', savedDecor === decorAfter, `存档=${savedDecor}`);
 
+  // 浮动工具条：小屏上面板可能在折叠区，底部浮动条必须真的可用（曾漏绑事件）
+  await devicePhaseB.click('#add-rock');
+  const floatCount = await devicePhaseB.evaluate('window.__mofish.state.decor.length');
+  const floatRot0 = await devicePhaseB.evaluate('window.__mofish.state.decor.at(-1).rot');
+  await devicePhaseB.click('#decor-float [data-decor-action="rotate"]');
+  const floatRot1 = await devicePhaseB.evaluate('window.__mofish.state.decor.at(-1).rot');
+  check('浮动工具条可以转向', Math.abs(floatRot1 - floatRot0) > 0.01, `${floatRot0} → ${floatRot1}`);
+  await devicePhaseB.click('#float-confirm');
+  check('浮动条“放在这里”生效', await devicePhaseB.evaluate('document.getElementById("decor-pending-actions").hidden === true'));
+  await devicePhaseB.click('#add-rock');
+  await devicePhaseB.click('#float-cancel');
+  const floatAfterCancel = await devicePhaseB.evaluate('window.__mofish.state.decor.length');
+  check('浮动条“取消”移除待确认物件', floatAfterCancel === floatCount,
+    `取消前=${floatCount + 1}，取消后=${floatAfterCancel}`);
+  check('取消后待确认按钮不再残留', await devicePhaseB.evaluate('document.getElementById("float-cancel").hidden === true'));
+
   // 2D 降级与画质
   await devicePhaseB.click('#toggle-2d');
   await sleep(900);
