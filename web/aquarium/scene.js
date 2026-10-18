@@ -1,9 +1,10 @@
 // 3D 鱼缸场景：本机 GPU 实时渲染，无外部模型/贴图/字体/远程资源。
 //
-// 结构：一个无边框玻璃缸（后墙 + 两侧 + 沙底 + 水面），相机在缸外前半空间内受限环绕。
+// 结构：五块有厚度的无边框玻璃 + 沙底 + 水面，开口向上，相机在缸外前半空间内受限环绕。
 // 光影走「柔和主光 + 环境补光 + 接触阴影 + 水面高光 + 水下焦散」的组合，
 // 高画质开启阴影贴图与焦散，低画质关闭阴影、降低像素比与粒子数量。
 import * as THREE from 'three';
+import { createGlassTank, GLASS_THICKNESS } from './glass.js';
 
 export const TANK = Object.freeze({
   width: 4.4,
@@ -13,6 +14,15 @@ export const TANK = Object.freeze({
   sandY: 0,
   front: 1.0
 });
+
+export function tankFitScale(aspect) {
+  // Match the default camera's 42° vertical field of view and 0.32 pitch.
+  const halfFov = Math.tan(THREE.MathUtils.degToRad(42 / 2));
+  const halfWidth = TANK.width / 2 + GLASS_THICKNESS + 0.08;
+  const fitDistance = (TANK.depth / 2 + GLASS_THICKNESS
+    + halfWidth * 1.06 / (halfFov * Math.max(0.2, aspect))) / Math.cos(0.32);
+  return Math.max(1, fitDistance / 5.1);
+}
 
 export const QUALITY = {
   high: {
@@ -282,18 +292,9 @@ export function createTankScene({ canvas, quality = 'high' }) {
     side: THREE.DoubleSide
   });
   const wallBaseColor = wallMat.color.clone();
-  const sideBaseColor = new THREE.Color('#7fb3aa');
   const backWall = new THREE.Mesh(new THREE.PlaneGeometry(TANK.width, TANK.height), wallMat);
-  backWall.position.set(0, TANK.height / 2, -TANK.depth / 2);
+  backWall.position.set(0, TANK.height / 2, -TANK.depth / 2 - GLASS_THICKNESS - 0.015);
   tankGroup.add(backWall);
-
-  const sideMat = new THREE.MeshBasicMaterial({ color: sideBaseColor, transparent: true, opacity: 0.22, toneMapped: false, side: THREE.DoubleSide, depthWrite: false });
-  for (const side of [-1, 1]) {
-    const wall = new THREE.Mesh(new THREE.PlaneGeometry(TANK.depth, TANK.height), sideMat);
-    wall.position.set(side * TANK.width / 2, TANK.height / 2, 0);
-    wall.rotation.y = side * Math.PI / 2;
-    tankGroup.add(wall);
-  }
 
   // 沙面：轻微起伏，顶点色做深浅过渡，接收阴影。
   const sandGeo = new THREE.PlaneGeometry(TANK.width, TANK.depth, 48, 26);
@@ -381,11 +382,8 @@ export function createTankScene({ canvas, quality = 'high' }) {
     tankGroup.add(mesh);
   }
 
-  // 玻璃正面 + 顶沿：只留很淡的反射，不能挡住鱼。
-  const glassMat = new THREE.MeshBasicMaterial({ color: '#eaf6f2', transparent: true, opacity: 0.026, depthWrite: false, toneMapped: false, side: THREE.DoubleSide });
-  const glass = new THREE.Mesh(new THREE.PlaneGeometry(TANK.width, TANK.height), glassMat);
-  glass.position.set(0, TANK.height / 2, TANK.front);
-  glass.renderOrder = 6;
+  const glassTank = createGlassTank(TANK, { quality });
+  const glass = glassTank.group;
   tankGroup.add(glass);
 
 
@@ -412,7 +410,7 @@ export function createTankScene({ canvas, quality = 'high' }) {
   const blobMat = new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, opacity: 0.62, depthWrite: false });
 
   // ---------------------------------------------------------------- 相机控制
-  const cameraState = { yaw: 0, pitch: 0.24, distance: 5.1, target: new THREE.Vector3(0, 0.98, 0) };
+  const cameraState = { yaw: 0, pitch: 0.32, distance: 5.1, target: new THREE.Vector3(0, 0.98, 0) };
   let fitScale = 1;
   const LIMITS = { yaw: 0.62, pitchMin: 0.02, pitchMax: 0.62, distMin: 3.6, distMax: 7.2 };
   let night = 0;
@@ -443,7 +441,7 @@ export function createTankScene({ canvas, quality = 'high' }) {
   }
   function resetCamera() {
     cameraState.yaw = 0;
-    cameraState.pitch = 0.24;
+    cameraState.pitch = 0.32;
     cameraState.distance = 5.1;
     applyCamera();
   }
@@ -451,8 +449,10 @@ export function createTankScene({ canvas, quality = 'high' }) {
   function resize(width, height) {
     if (width < 2 || height < 2) return;
     camera.aspect = width / height;
-    // 竖屏时按比例拉远相机，保证整缸在画面内（手机不裁掉两侧造景）。
-    fitScale = Math.min(1.8, Math.max(1, 1.18 / Math.max(0.2, camera.aspect)));
+    // Fit the nearest front rim, rather than a plane through the tank centre.
+    // Otherwise portrait screens clip both glass corners despite fitting fish.
+    fitScale = tankFitScale(camera.aspect);
+    scene.fog.density = 0.075 / fitScale;
     applyCamera();
     camera.updateProjectionMatrix();
     renderer.setSize(width, height, false);
@@ -487,7 +487,7 @@ export function createTankScene({ canvas, quality = 'high' }) {
       }
     });
     wallMat.color.copy(wallBaseColor).lerp(new THREE.Color('#7d9a9a'), value * 0.55);
-    sideMat.color.copy(sideBaseColor).lerp(new THREE.Color('#153b3d'), value * 0.7);
+    glassTank.setNight(value);
   }
   applyNight(0);
 
@@ -520,16 +520,19 @@ export function createTankScene({ canvas, quality = 'high' }) {
   function dispose() {
     if (disposed) return;
     disposed = true;
+    const geometries = new Set(), materials = new Set(), textures = new Set();
     scene.traverse((obj) => {
-      if (obj.geometry) obj.geometry.dispose();
+      if (obj.geometry) geometries.add(obj.geometry);
       const mat = obj.material;
-      if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-      else if (mat) {
-        Object.values(mat).forEach((v) => { if (v && v.isTexture) v.dispose(); });
-        mat.dispose();
+      for (const material of Array.isArray(mat) ? mat : mat ? [mat] : []) {
+        materials.add(material);
+        Object.values(material).forEach((v) => { if (v && v.isTexture) textures.add(v); });
       }
     });
-    shadowTex.dispose();
+    textures.add(shadowTex);
+    textures.forEach(texture => texture.dispose());
+    materials.forEach(material => material.dispose());
+    geometries.forEach(geometry => geometry.dispose());
     renderer.dispose();
     renderer.forceContextLoss?.();
   }
