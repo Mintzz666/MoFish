@@ -67,7 +67,7 @@ ChatGPT 登录）+ Supabase Auth + Supabase Postgres（RLS + revision 条件更�
 ## 首版功能
 
 - 响应式鱼缸、自然游动、点击/触屏投食、鱼追逐食物并成长。
-- 最多 12 条鱼，改名、成长与投喂记录，最多 8 株水草。
+- 最多 12 条鱼，改名、成长与投喂记录，最多 14 株水草及可持久石头/沉木造景。
 - 昼夜、主动开启的合成水声、全屏（浏览器支持时）。
 - 每 15 秒及切换后台时本地保存；离线成长上限 24 小时，不会饿死。
 - JSON 存档导出与校验导入；导入前确认覆盖。清除浏览器数据会删除本地进度。
@@ -76,16 +76,18 @@ ChatGPT 登录）+ Supabase Auth + Supabase Postgres（RLS + revision 条件更�
 ## 实施计划
 
 1. **首版**：完成本地可玩、离线缓存、存档备份与移动布局。
-2. **阶段 A（v0.2.0）**：邮箱登录、单用户跨设备云存档、Cloudflare 独立入口 —— 代码已实现，等待真实云账号联调与验收。
-3. **阶段 B（v0.3.0）**：多用户共同养鱼、成员邀请/撤销、角色权限、变更通知。
-4. **阶段 C / D（v0.4.0 / v0.5.0）**：页面重设计与基础 3D 鱼缸；鱼体摆动、真实转向/避障、水面光影与造景。
+2. **阶段 A**：邮箱登录、跨设备云存档和独立入口，已验收。
+3. **阶段 B**：体素3D鱼缸、四阶段成长、持久造景及2D降级，已独立部署，待用户真机接受。
+4. **阶段 C**：定向邀请、主人/编辑/观看权限、操作合并/冲突备份和实时版本通知，已实施并通过真实QA检查、独立部署，待用户验收。
+
+最新入口：[MoFish C](https://mofish-phase-c.tibo-reset-notifier.workers.dev/)。完整证据见 [C验收记录](docs/PHASE-C-ACCEPTANCE.md)，人工检查见 [集中清单](docs/PHASE-C-DEVICE-ACCEPTANCE.md)。开发部署不代表正式release。
 
 阶段划分与验收标准以 [`docs/ROADMAP.md`](docs/ROADMAP.md) 为准。
 
 ## 同步设计
 
 云端权威数据是 Supabase Postgres 里的一行：`aquariums(id, owner_id, revision, state_version, state_json, created_at, updated_at, last_growth_at)`。
-写入必须带 `expected_revision` 走 `save_aquarium` 这个条件更新 RPC：revision 不匹配就返回 conflict 与
+A/B个人缸写入带 `expected_revision` 走 `save_aquarium` 这个条件更新 RPC：revision 不匹配就返回 conflict 与
 服务端当前版本，客户端保留未同步副本并交给用户选择，不使用客户端时间戳做「最后写入覆盖」。
 离线成长由 `settle_growth` 按服务端时间整秒结算（上限 24 小时），锚点推进到 `now()`，因此重复调用不会重复奖励。
 
@@ -93,8 +95,8 @@ ChatGPT 登录）+ Supabase Auth + Supabase Postgres（RLS + revision 条件更�
 `web/cloud/*` 负责认证、数据接口与同步状态机，`web/ui/account.js` 只做表单与状态呈现。
 Service Worker 只缓存同源静态资源，认证与存档接口不进入缓存。
 
-阶段 B 会新增 `aquarium_members` 成员关系表并放宽「每账号一条鱼缸」的唯一索引；
-届时应新增迁移文件而不是修改已应用的迁移。
+C新增 `mofish_members` 等表，保留每人一个个人缸，通过成员关系加入别人的缸。C使用带唯一operation_id的语义操作RPC，合并不同物件改动；共享缸拒绝旧整缸覆盖。Realtime只提示版本后重新授权读取，队列按账号/缸隔离。
+迁移历史及安全回滚见C验收记录；已应用迁移不重放。
 
 ## 用户确认版本后的发布 hook
 

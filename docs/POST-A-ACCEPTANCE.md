@@ -3,7 +3,8 @@
 ## 最新任务边界（2026-10-20）
 
 用户已明确授权在 B 真机验收前推进 C、整体自查及审美/交互优化，并部署独立 C 测试入口。
-当前开发分支 `codex/phase-c-shared-aquariums`；B 部署保留。最新实施和证据以
+当前开发分支 `codex/phase-c-shared-aquariums`；B 部署保留。
+[C测试入口](https://mofish-phase-c.tibo-reset-notifier.workers.dev/)已独立部署；238项严格测试、B实云64项、C实云31项、C双账号页面21项及线上核验56项均通过。最新实施和证据以
 [PHASE-C-ACCEPTANCE.md](PHASE-C-ACCEPTANCE.md) 为准，明早统一按
 [集中真机步骤](PHASE-C-DEVICE-ACCEPTANCE.md) 验收。B/C 均未取得最终用户接受，不合并、不打标签、不正式 release。
 

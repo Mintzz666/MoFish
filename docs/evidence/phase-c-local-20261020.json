@@ -1,0 +1,158 @@
+{
+  "date": "2026-10-20",
+  "execution": "local macOS Project, Node 24.19.0, Wrangler 4.151.0",
+  "branch": "codex/phase-c-shared-aquariums",
+  "base_sha": "00426c152969ee634d7ccc3e102fc38942b4b985",
+  "deployed_source_sha": "29fd28ecbf5e18e7fff01345a0b492ee1dbc9519",
+  "url": "https://mofish-phase-c.tibo-reset-notifier.workers.dev/",
+  "worker": "mofish-phase-c",
+  "project_ref": "gbcfyqtbezkgkstrfbzn",
+  "cloudflare_version": "988e6707-c86e-49ad-82c7-9d61867c85c2",
+  "cloudflare_deployment": "0a94fd40-aad7-430d-a2bf-616d235def8d",
+  "traffic_percentage": 100,
+  "cloudflare_source_annotation": "MoFish Phase C source=29fd28ecbf5e18e7fff01345a0b492ee1dbc9519",
+  "local_strict_tests": {
+    "passed": 238,
+    "total": 238,
+    "skipped": 0
+  },
+  "real_http": {
+    "b": {
+      "passed": 64,
+      "total": 64
+    },
+    "c": {
+      "passed": 31,
+      "total": 31
+    },
+    "used_existing_env_proxy": true
+  },
+  "browser_checks": {
+    "b_fake_backend": {
+      "passed": 87,
+      "total": 87
+    },
+    "c_local_build_real_backend": {
+      "passed": 21,
+      "total": 21
+    },
+    "c_safari_live_worker": "guest 3D and sharing-login prompt visibly verified",
+    "phone_viewport": "390x844 emulation only; no real device acceptance"
+  },
+  "auth_redirect": {
+    "explicit_c": true,
+    "default_b_preserved": true,
+    "emails_sent": 0
+  },
+  "deployment_verification": {
+    "passed": 56,
+    "total": 56,
+    "private_paths_404": true,
+    "assets": [
+      {
+        "file": "index.html",
+        "bytes": 16099,
+        "sha256": "f0fc0285a5290413e7cfb418ce1c3d39825da2774547c14a4ce87019f0b8630f",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "app.js",
+        "bytes": 866098,
+        "sha256": "36dc73f314ca8f3951f485b39c775b71da92fd37198e631d3d578e74e1012e02",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "style.css",
+        "bytes": 25139,
+        "sha256": "e6b0c7a7af6bb276632c03f8cb519ee664af20cf5679eee760cdaeeee1b32d31",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "sharing.css",
+        "bytes": 10344,
+        "sha256": "9396489711a249ee4f01ecfadf14bb940ef8950ff9f5fb6cc9e0edab27400b65",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "sw.js",
+        "bytes": 2029,
+        "sha256": "15dfa36299fec3b066e66d69068f64ecb782936d0a573842a5e2f622d22a0f6a",
+        "cache": "no-cache"
+      },
+      {
+        "file": "config.js",
+        "bytes": 353,
+        "sha256": "f8e7c8e698b7a53c0e897c71a0a88c6ebb908266585b52e9c099fa462d65dacd",
+        "cache": "no-cache"
+      },
+      {
+        "file": "deployment.json",
+        "bytes": 148,
+        "sha256": "dfb9da5a6778d15d517f127558b3a9283a6b6318d0009313e814fcc8c610d1ed",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "icon.svg",
+        "bytes": 355,
+        "sha256": "3b2991764aae50b31851329a495ae09596a378d1366f7e820027591670313f52",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "manifest.webmanifest",
+        "bytes": 253,
+        "sha256": "9aea9a430cca5adce2730007b8bdc1885d703cf39dbdf6d72392e05d7d1b100e",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "THIRD-PARTY-NOTICES.txt",
+        "bytes": 5893,
+        "sha256": "84fdb5db8069ceb7d9a1b9c2866a36fb29d3b21743444559c8b8196afd384b9d",
+        "cache": "public, max-age=0, must-revalidate"
+      }
+    ],
+    "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co; form-action 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'"
+  },
+  "migration": {
+    "file": "20261019155754_phase_c_shared_aquariums.sql",
+    "cloud_version": "20261019161500",
+    "sha256": "b821bb2c996a9175afe5642cd28e9f545471a58969f44ceecd0f86f4338679c8",
+    "matches_applied_input": true
+  },
+  "protected_worker_histories_unchanged": {
+    "mofish": true,
+    "mofish-phase-b": true
+  },
+  "cleanup": {
+    "qa_final_counts": {
+      "auth_users": 0,
+      "aquariums": 0,
+      "feed_events": 0,
+      "members": 0,
+      "invites": 0,
+      "operations": 0,
+      "revisions": 0
+    },
+    "browser_registered_accounts_confirmed_deleted": 6,
+    "browser_profiles_removed": true,
+    "owned_registry_files_removed": true,
+    "safari_task_tabs_closed": true,
+    "user_original_tabs_preserved": true,
+    "retained": [
+      "B and C QA Workers",
+      "QA Supabase project",
+      "ignored env files 0600",
+      "managed worktree",
+      "sanitized logs and task screenshots"
+    ],
+    "preview_pid_stopped": 72516
+  },
+  "remaining_manual": [
+    "real phone touch",
+    "real outage and cross-device reconnection",
+    "10-minute heat and foreground/background",
+    "actual audio",
+    "SMTP delivery and clicking recovery link",
+    "final aesthetic and user acceptance"
+  ],
+  "main_merge_tag_release": false
+}

@@ -18,4 +18,4 @@ RLS每次校验现行成员；断线/恢复和定时轻量权限检查兜底撤�
 主代理负责架构、SQL/RLS/并发、同步集成、整体视觉交互升级、实云与最终验收。
 Luna max 两个互不重叠任务：纯语义差分/本机重放模块及回归；共享面板DOM/CSS及回归。
 完成后先做全流程检查/修复，再审美与交互打磨、最终回归及部署；明早只交必须用户参与的集中实测。
-当前功能、整体审美/交互打磨与实云主链已完成；严格238/238、B实云64/64、C实云31/31。最终页面/部署记录以 [PHASE-C-ACCEPTANCE.md](PHASE-C-ACCEPTANCE.md) 为准。真人待测集中见 [PHASE-C-DEVICE-ACCEPTANCE.md](PHASE-C-DEVICE-ACCEPTANCE.md)；不以代理回执代替实际验收。
+当前功能、整体审美/交互打磨与实云主链已完成；严格238/238、B实云64/64、C实云31/31。C已独立部署，页面21/21、线上核验56/56。精确版本和页面/部署记录以 [PHASE-C-ACCEPTANCE.md](PHASE-C-ACCEPTANCE.md) 为准。真人待测集中见 [PHASE-C-DEVICE-ACCEPTANCE.md](PHASE-C-DEVICE-ACCEPTANCE.md)；不以代理回执代替实际验收。

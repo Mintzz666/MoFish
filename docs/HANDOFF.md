@@ -4,6 +4,12 @@
 
 用户明确授权在B真机验收前继续多人C、与Luna max协作、整体自查和审美/交互升级，
 并允许向既有QA项目追加C迁移、部署独立C Worker及其回调。B尚未取得用户接受。
+C已部署：[测试入口](https://mofish-phase-c.tibo-reset-notifier.workers.dev/)，源码
+`29fd28ecbf5e18e7fff01345a0b492ee1dbc9519`，Cloudflare version
+`988e6707-c86e-49ad-82c7-9d61867c85c2`，100%流量；线上文件/配置/CSP/缓存核验56/56。
+A/B Worker部署历史前后相等；最终QA临时身份及6张表均0，任务浏览器profile/临时登记/预览进程已清理。
+公开概要见 [phase-c-local-20261020.json](evidence/phase-c-local-20261020.json)。
+
 当前分支 `codex/phase-c-shared-aquariums`，起点 `00426c152969ee634d7ccc3e102fc38942b4b985`；
 继续复用 `/Users/mintzz/.codex/worktrees/mofish-phase-b-acceptance/MoFish`，原Hermes工作区未覆盖。
 

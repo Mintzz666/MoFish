@@ -10,7 +10,7 @@
 - 复用工作树 `/Users/mintzz/.codex/worktrees/mofish-phase-b-acceptance/MoFish`；原 Hermes 目录保留。
 - 同一个独立 QA 项目 `MoFish-Phase-B-QA` / `gbcfyqtbezkgkstrfbzn`，没有重复建项目或新增收费资源。
 - 独立 C Worker 目标 `mofish-phase-c`，入口 `https://mofish-phase-c.tibo-reset-notifier.workers.dev/`。
-  最终部署 SHA/version 及核验记录在下方交付记录补入。
+  已实际部署并核验，精确版本见下方交付记录。
 - B Worker 保留冻结版本；A 项目 `jxqlzuvpuaqwcdvgxnle`、A Worker `mofish`、Tibo、Sites 和已有令牌不改。
 - 本机 `.env.phase-c` 为 Git 忽略、0600，只在本机使用；公开配置与私密值分开，复用 Wrangler OAuth，
   未创建或复制令牌。Node 24.19.0，Wrangler 4.151.0；本轮 HTTP 使用已存在的环境代理，未改系统网络。
@@ -71,7 +71,16 @@ Auth 保留 B Site URL和B精确回调，新增 C 精确根地址；不增加通
 
 ## 交付记录与剩余
 
-最终构建/部署/清理后补入精确结果。完整本机日志 `.local/phase-c-20261019/`，不提交私密配置、dist、账号注册表、
+- 实际源码 **`29fd28ecbf5e18e7fff01345a0b492ee1dbc9519`**；其后文档提交不代表重新部署。
+- Cloudflare version **`988e6707-c86e-49ad-82c7-9d61867c85c2`**，部署 `0a94fd40-aad7-430d-a2bf-616d235def8d`，100%流量。
+- 最终预演、实际部署通过。线上10份文件逐字节匹配，公开配置只含C阶段和QA URL/key，CSP/缓存/私密路径共 **56/56** 通过。
+- Cloudflare版本说明和 `/deployment.json` 均记录完整源码SHA；A/B Worker部署历史前后逐项相等。
+- Chromium双账号21/21使用本机构建与真实QA后端；部署后核对其文件与线上完全相同。Safari另行实际打开C线上入口，核验3D体素/玻璃、游客共享登录提示及关闭返回；未把此项写成双账号线上实测。
+- 最终QA的auth.users及6张业务/通知表计数均0；临时身份已管理API删除并404确认。三次独立浏览器profile均确认移除，本轮Safari三个标签关闭并恢复原标签，预览PID72516已停止。
+- 含合成邮箱的临时登记文件和一次性校验脚本已清理；未删除QA项目或B/C Worker。
+- 公开脱敏证据：[phase-c-local-20261020.json](evidence/phase-c-local-20261020.json)。
+
+完整本机日志 `.local/phase-c-20261019/`，不提交私密配置、dist、账号注册表、
 截图或浏览器profile。公开脱敏证据摘要在 `docs/evidence/`。
 
 集中人工步骤见 [PHASE-C-DEVICE-ACCEPTANCE.md](PHASE-C-DEVICE-ACCEPTANCE.md)：真实触控、跨设备断网重连、
