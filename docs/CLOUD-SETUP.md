@@ -1,5 +1,8 @@
 # MoFish 云存档配置与运维（阶段 A）
 
+阶段 B 独立测试环境、专用变量、`test:cloud:b` 与 `deploy:cloudflare:b` 见
+[PHASE-B-CLOUD-PLAN.md](PHASE-B-CLOUD-PLAN.md)。当前只是本地准备，未创建 B 项目、未应用 B 云端迁移、未部署 B。
+
 本文是「邮箱密码登录 + 跨设备云存档」的落地指南：需要你在控制台做的最小步骤、部署与验证、
 备份/恢复/回滚，以及本阶段尚未验证的边界。
 

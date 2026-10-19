@@ -1,5 +1,24 @@
 # MoFish 交接
 
+## B 云端联调准备（2026-10-19）
+
+基于 `7606a1c8076895a04ea63e3afdf6d03683ced54c` 继续同一 Codex 分支。
+新增 `test:cloud:b`：继承 A 临时账号/只读管理预检/finally 清理，追加 v2 造景、进食并发去重、营养和自然成长，
+以及生产同步引擎程序模拟断网、离线重启、冲突备份与换号隔离。清理额外核验临时鱼缸及事件表无残留。
+新增 `deploy:cloudflare:b`，Worker 固定 `mofish-phase-b`，A 部署路径保留；所有 B 公开/私有变量独立使用
+`MOFISH_B_*`，不回退到 A 配置，B 测试/部署均拒绝现有 A 项目。
+
+严格 `MOFISH_REQUIRE_POSTGRES=1 npm test`：185/185、零跳过；新 B 流程在真实迁移 SQL 的隔离 PGlite 上执行，
+Auth/HTTP 清理使用替身单独检查。Wrangler 4.151.0 的 B 部署预演通过（占位新项目配置，没有云端写入）。
+未重复浏览器套件：本轮只改 CLI/测试/文档，产品前端未改，上一轮玻璃版浏览器为 87/87。
+最终构建通过；本轮证据 `/workspace/reviews/mofish-phase-b-cloud-prep-20261019/`。本地测试数据库已关闭、
+自建兼容库已清理，未启动浏览器服务；清理记录为该目录的 `cleanup.json`，正常依赖缓存保留。
+
+只读云检查：A 项目健康、迁移仍仅两份 A SQL；MoFish 组织目前仅一个项目、没有分支。
+已有管理密钥只绑定 A 域名。未创建 B 项目、未应用云端 B 迁移、未实际部署，未更改 main/标签/Tibo/Sites/令牌。
+具体可执行方案见 [PHASE-B-CLOUD-PLAN.md](PHASE-B-CLOUD-PLAN.md)。等待用户指定测试项目的组织与资源范围，
+再查询费用并遵守确认规则；若连接无法提供新管理凭据，需要用户安全配置新 B 变量，不通过聊天传密钥。
+
 ## 实体玻璃缸与 B 剩余验收（2026-10-18）
 
 继续 `codex/phase-b-review-polish`，基于 `17b667f0dc8513846d43aa23ecc2f47606f9700e`，原 A 工作区未动。

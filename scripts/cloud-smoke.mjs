@@ -1,4 +1,4 @@
-// Real Supabase smoke test for Phase A. It creates uniquely named temporary accounts
+// Real Supabase smoke test for Phase A, with opt-in Phase B checks. It creates uniquely named temporary accounts
 // with the service role key, exercises the app's auth-js facade and database API, then
 // verifies that every account it created was deleted. It never reuses a supplied user.
 
@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { createAuthClient } from '../web/cloud/auth.js';
 import { createCloudApi } from '../web/cloud/api.js';
+import { checkPhaseBTarget, runPhaseBChecks, phaseBEnvironment } from './phase-b-cloud-checks.mjs';
 
 const DEFAULT_TIMEOUT_MS = 12_000;
 
@@ -224,7 +225,8 @@ export async function runCloudSmoke({
   env = process.env,
   fetchImpl = globalThis.fetch,
   logger = console,
-  timeoutMs = DEFAULT_TIMEOUT_MS
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  phase = 'a'
 } = {}) {
   const results = [];
   const created = [];
@@ -285,7 +287,18 @@ export async function runCloudSmoke({
   }
 
   try {
+    if (!['a', 'b'].includes(phase)) throw new SmokeError('phase 只接受 a 或 b');
+    if (phase === 'b') {
+      const missing = ['MOFISH_B_SUPABASE_URL', 'MOFISH_B_SUPABASE_ANON_KEY', 'MOFISH_B_SMOKE_SERVICE_ROLE_KEY', 'MOFISH_B_PROJECT_REF']
+        .filter(key => !String(env[key] || '').trim());
+      if (missing.length) throw new SmokeError(`B 联调缺少独立配置：${missing.join('、')}；不会复用 A 的配置或凭据`);
+      env = phaseBEnvironment(env);
+    }
     config = readConfig(env);
+    if (phase === 'b') {
+      try { checkPhaseBTarget(config.url, env.MOFISH_SMOKE_EXPECTED_PROJECT_REF); }
+      catch (error) { throw new SmokeError(error.message); }
+    }
     if (typeof fetchImpl !== 'function') throw new SmokeError('当前 Node 环境没有可用的 fetch');
     logger.log(`目标 Supabase 项目：${config.target}（只创建临时账号；密钥不会打印）\n`);
 
@@ -328,6 +341,7 @@ export async function runCloudSmoke({
     requireCheck(ensuredA.ok && initialRow?.status === 'ok' && initialRow.created === true &&
       typeof aquariumId === 'string' && Number(initialRow.revision) >= 1,
     '临时账号 A 首次开缸（created=true）', `HTTP ${ensuredA.ok ? 200 : ensuredA.status || 0}`);
+    created.find(account => account.id === accountA.id).aquariumId = aquariumId;
 
     const restored = await deviceA2.api.ensureAquarium(validState('这份候选存档不会覆盖云端', `candidate-${randomUUID()}`), 1);
     requireCheck(restored.ok && restored.row?.status === 'ok' && restored.row.created === false &&
@@ -418,6 +432,22 @@ export async function runCloudSmoke({
       stateVersion: 1
     });
     requireCheck(!badState.ok && badState.row?.status === 'invalid_state', '服务端拒绝非法存档');
+    if (phase === 'b') {
+      await runPhaseBChecks({
+        apiA: deviceA.api, apiA2: deviceA2.api, apiB: deviceB.api,
+        initialRow: current.row,
+        call: (path, options) => call(path, options),
+        accessToken: (await deviceA.auth.getSession({ allowRefresh: false })).session?.access_token,
+        sessionA: (await deviceA.auth.getSession({ allowRefresh: false })).session,
+        sessionB: (await deviceB.auth.getSession({ allowRefresh: false })).session,
+        registerAquarium: (userId, aquariumId) => {
+          const account = created.find(account => account.id === userId);
+          if (!account) throw new SmokeError('B 测试只允许登记本轮临时账号的鱼缸');
+          account.aquariumId = aquariumId;
+        },
+        requireCheck
+      });
+    }
   } catch (error) {
     const message = error instanceof SmokeError
       ? error.message
@@ -452,6 +482,14 @@ export async function runCloudSmoke({
         record(clean, '已验证临时测试账号清理', clean
           ? `DELETE HTTP ${deletion.status}; GoTrue 已确认 HTTP 404 user_not_found`
           : `DELETE HTTP ${deletion.status}; 查询 HTTP ${check.status}; 残留测试账号 ID=${account.id}`);
+        if (phase === 'b' && account.aquariumId) {
+          for (const [table, column] of [['aquariums', 'id'], ['mofish_feed_events', 'aquarium_id']]) {
+            const rows = await call(`/rest/v1/${table}?select=id&${column}=eq.${encodeURIComponent(account.aquariumId)}`, {
+              token: config.serviceKey, apiKey: config.serviceKey
+            });
+            record(isEmptyReadSuccess(rows), `B：临时账号关联的 ${table} 已清理`, `HTTP ${rows.status}`);
+          }
+        }
       }
     } else if (config) {
       record(true, '无需清理（尚未创建临时测试账号）');
@@ -468,9 +506,11 @@ export async function runCloudSmoke({
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const args = process.argv.slice(2);
+  const phase = args.length === 0 ? 'a' : args.length === 1 && args[0] === '--phase=b' ? 'b' : 'invalid';
   let envReady = true;
   try {
-    loadEnvFile(new URL('../.env', import.meta.url));
+    loadEnvFile(new URL(phase === 'b' ? '../.env.phase-b' : '../.env', import.meta.url));
   } catch (error) {
     if (error.code !== 'ENOENT') {
       console.error(`无法读取本机 .env（${error?.name || '未知错误'}）`);
@@ -479,7 +519,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     }
   }
   if (envReady) {
-    const result = await runCloudSmoke();
+    const result = await runCloudSmoke({ phase });
     if (!result.ok) process.exitCode = 1;
   }
 }
