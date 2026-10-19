@@ -1,5 +1,22 @@
 # MoFish 交接
 
+## 独立 B 项目已创建，等待新环境配置续接（2026-10-19）
+
+用户已确认推荐的 MoFish 组织与零费用继续条件；实际报价 $0/月，已创建 `MoFish-Phase-B-QA`
+（`gbcfyqtbezkgkstrfbzn`，`ap-south-1`），仅在这个新项目应用三份迁移。A 项目仍只有两份 A 迁移，未更改。
+真实 SQL `scripts/phase-b-sql-acceptance.sql` 31/31 通过：版本/造景、真实角色 RLS、越权、进食/营养/成长、
+24h 窗口和离线上限、500 事件限额及限额下幂等重试。子事务回滚后新项目三张表均为 0 行，RLS 开启。
+新增本地执行回归，确认同一 SQL 不会删除无关身份。最终严格本地测试 186/186、零跳过，构建通过。
+公开配置已保存至忽略的 `.env.phase-b`（没有管理密钥），新环境可从连接恢复。
+
+用户要求配置后在新对话继续；目前缺新域名的网络许可及 `MOFISH_B_SMOKE_SERVICE_ROLE_KEY` 安全注入。
+**真实 HTTP 冒烟未执行，`mofish-phase-b` 尚未部署。** 新对话从 [PHASE-B-NEXT-CHAT.md](PHASE-B-NEXT-CHAT.md)
+继续，包含实际项目/迁移记录、用户授权、配置、精确命令和边界；不要再次创建或重放已有迁移。
+现有 A 站点、Tibo、旧 Sites、构建令牌保持原状；未合并、打标签或运行 release。
+用户配置步骤及可复制的新对话提示在 [PHASE-B-ENV-SETUP.md](PHASE-B-ENV-SETUP.md)。
+本轮证据 `/workspace/reviews/mofish-phase-b-cloud-live-20261019/`，SQL/本地检查完毕，临时兼容库已清理，未启动浏览器/预览服务；
+新 B 项目及忽略的公开配置保留供续接，清理记录为 `cleanup.json`。
+
 ## B 云端联调准备（2026-10-19）
 
 基于 `7606a1c8076895a04ea63e3afdf6d03683ced54c` 继续同一 Codex 分支。

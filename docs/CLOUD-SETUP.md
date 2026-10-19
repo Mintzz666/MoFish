@@ -1,7 +1,8 @@
 # MoFish 云存档配置与运维（阶段 A）
 
 阶段 B 独立测试环境、专用变量、`test:cloud:b` 与 `deploy:cloudflare:b` 见
-[PHASE-B-CLOUD-PLAN.md](PHASE-B-CLOUD-PLAN.md)。当前只是本地准备，未创建 B 项目、未应用 B 云端迁移、未部署 B。
+[PHASE-B-CLOUD-PLAN.md](PHASE-B-CLOUD-PLAN.md)。独立 B 项目已创建并应用三份迁移，真实 SQL 31/31 通过；
+HTTP 和 B Worker 部署等待用户配置后续接，见 [PHASE-B-NEXT-CHAT.md](PHASE-B-NEXT-CHAT.md)。现有 A 项目保持原状。
 
 本文是「邮箱密码登录 + 跨设备云存档」的落地指南：需要你在控制台做的最小步骤、部署与验证、
 备份/恢复/回滚，以及本阶段尚未验证的边界。
@@ -56,7 +57,8 @@ Cloudflare 可复用 Tibo 所用账号，为 MoFish 建独立 Worker `mofish`，
 本地版本与云端迁移历史已对齐；已应用的 SQL 保持只读，后续变更新增迁移。
 
 阶段 B 新增第三份迁移 `20261018120000_phase_b_growth_and_aquascaping.sql`（v2 存档校验、四阶段结算、
-进食记账表 `mofish_feed_events` 与 `record_feeding`）。**它还没有应用到任何项目**。
+进食记账表 `mofish_feed_events` 与 `record_feeding`）。它已应用到独立 B QA 项目 `gbcfyqtbezkgkstrfbzn`，
+**现有 A 项目 `jxqlzuvpuaqwcdvgxnle` 未应用 B 迁移**。
 升级顺序必须是：先在目标项目应用这份迁移，再部署 v2 前端；顺序反了会拒绝 v2 写入（客户端保留本机副本，不丢档）。
 回滚见 `supabase/rollback/0002_phase_b_growth.down.sql`：先停止 v2 写入、导出备份并明确转换现有 v2 存档；脚本在显式事务中首先检查残留 v2 行，未转换则拒绝，避免先删除事件表再失败。
 

@@ -8,8 +8,10 @@
 
 ## 当前收口清单（2026-10-18，Codex 修复分支）
 
-2026-10-19 已补好独立 B 联调脚本和部署入口，本地严格测试 185/185、零跳过，部署预演通过；
-执行顺序、配置及用户真机步骤见 [PHASE-B-CLOUD-PLAN.md](PHASE-B-CLOUD-PLAN.md)。尚未创建 B 云环境，以下待验收项保持未勾选。
+2026-10-19 已补好独立 B 联调脚本和部署入口；准备轮本地严格测试 185/185、零跳过，部署预演通过。
+随后新建 B 项目 `gbcfyqtbezkgkstrfbzn` 并应用三份迁移，真实 SQL 31/31 通过、临时数据回滚；
+HTTP 联调和 B Worker 部署仍未执行，等待用户完成新环境配置后在新对话继续。
+详见 [PHASE-B-NEXT-CHAT.md](PHASE-B-NEXT-CHAT.md) 与 [PHASE-B-CLOUD-PLAN.md](PHASE-B-CLOUD-PLAN.md)，以下待验收项保持未勾选。
 
 当前继续开发的分支为 `codex/phase-b-review-polish`；下方 Hermes 原始交付数据保留为历史记录。
 用户新增「实体玻璃缸体」已实现：五块有厚度的玻璃、开放缸口、切边/接缝、水线、底床与底垫；

@@ -1,31 +1,33 @@
-# 阶段 B 独立云端联调方案（待创建环境）
+# 阶段 B 独立云端联调方案（新项目已创建，待 HTTP 验收）
 
 2026-10-19，分支 `codex/phase-b-review-polish`，本轮基线 `7606a1c8076895a04ea63e3afdf6d03683ced54c`。
-脚本与方案已准备；**没有创建云项目、应用 B 迁移或部署 B 测试站**。
+用户已确认使用推荐的 MoFish 组织、零新增费用时继续。实际项目报价为 $0/月，
+已创建新项目 `gbcfyqtbezkgkstrfbzn` 并应用三份迁移；**HTTP 冒烟与 B Worker 部署尚未执行**。
+新对话从 [PHASE-B-NEXT-CHAT.md](PHASE-B-NEXT-CHAT.md) 继续。
 
 ## 具体目标
 
 | 资源 | 目标 | 当前状态 |
 | --- | --- | --- |
-| Supabase | 新项目 `MoFish-Phase-B-QA`，区域 `ap-south-1` | 待用户指定组织；目前只连接到 MoFish 组织 |
+| Supabase | `MoFish-Phase-B-QA` / `gbcfyqtbezkgkstrfbzn`，区域 `ap-south-1` | 已在 MoFish 组织创建，三份迁移完成 |
 | Cloudflare | 独立 Worker `mofish-phase-b` | 只做部署预演，未创建 |
 | 测试网址 | 预计 `https://mofish-phase-b.tibo-reset-notifier.workers.dev/` | 规划地址，尚不是可用测试入口 |
 | A 项目 | `jxqlzuvpuaqwcdvgxnle` | 只读检查健康，仅有 A 两份迁移；B 脚本主动拒绝它 |
 | A 站点 | `mofish.tibo-reset-notifier.workers.dev` | 保持原站点及用户存档 |
 
-Supabase 创建工具要求用户指定组织。创建项目/分支可能收费，须先查询指定组织报价，再按工具规则确认费用。
-本轮未查询报价或创建资源，不假定免费。旧服务密钥只绑定 A 域名，不能用其代理占位符访问新项目。
+组织已由用户确认、项目实际报价 $0/月并已创建；不要重复创建，也不新增收费资源。
+旧服务密钥只绑定 A 域名，不能用其代理占位符访问新项目。新 B 密钥和两个域名正在由用户配置。
 不合并 main、不打标签、不运行 release，不接触 Tibo、旧 Sites，不替换现有构建令牌。
 
-## 获准后的执行顺序
+## 执行顺序与当前进度
 
-1. 用户确认组织及独立 B 测试资源范围；查询实际费用后再创建项目。
-2. 记录实际 project ref 与域名，给环境增加新 Supabase 域名及 B Worker 域名的网络授权。
+1. 已完成组织、零费用范围确认及项目创建；不需要再询问相同授权。
+2. 用户需在环境设置增加 `gbcfyqtbezkgkstrfbzn.supabase.co` 和 `mofish-phase-b.tibo-reset-notifier.workers.dev`。
 3. 从连接取回公开 publishable 配置；新管理凭据通过独立安全变量注入，保留旧 A 凭据。
    若连接不能提供管理凭据，由用户在环境设置中补配一次；不粘贴聊天、不提交 Git。
-4. 仅在新空项目按顺序应用三份迁移，检查迁移历史及 advisors：
+4. 已在新项目按顺序应用三份迁移，并检查迁移历史及 advisors：
    `20261016065742_phase_a_cloud_saves.sql`、`20261016070336_phase_a_cloud_hardening.sql`、
-   `20261018120000_phase_b_growth_and_aquascaping.sql`。不在旧项目重放迁移。
+   `20261018120000_phase_b_growth_and_aquascaping.sql`。云端 MCP 自动编号见续接文档；不要盲目 `db push` 或重放。
 5. 运行真实 HTTP 冒烟，确认临时账号及关联行清理后，部署独立 B Worker。
 6. 新项目的 Auth Site URL/Redirect URLs 指向真实 B 测试网址，不能沿用 localhost；核对页面配置、CSP 与缓存。
 7. 补真实浏览器链路，再指导用户一次集中完成真机验收。自动化只使用随机临时账号，不发送验证或重置邮件。
@@ -69,10 +71,21 @@ NODE_USE_ENV_PROXY=1 npm run deploy:cloudflare:b
 程序模拟断网不等于真实设备断网。24h 过期窗口、500 条限额及多连接竞态另有本地 SQL 检查，
 此 HTTP 脚本不声称实际等待过 24h 或覆盖完整长期成长周期。
 
-本轮脚本验证：185/185 严格测试通过、零跳过。B 工作流使用实际迁移 SQL 的隔离 PGlite 数据库，
+准备轮脚本验证：185/185 严格测试通过、零跳过。B 工作流使用实际迁移 SQL 的隔离 PGlite 数据库，
 HTTP/GoTrue 清理保护使用本地替身；这些均不计为真实云端通过。
 Wrangler 4.151.0 部署预演通过，配置为明确的占位新项目，未创建资源。部署预演不证明真实云权限已获准。
 脱敏证据位于 `/workspace/reviews/mofish-phase-b-cloud-prep-20261019/`。
+
+新项目真实 SQL 验证：`scripts/phase-b-sql-acceptance.sql` 的 31 项全部通过，包含 v1/v2 速率、旧档升级、
+造景/版本校验、真实角色 RLS、越权拒绝、营养上限、24h 过期/离线上限、500 条限额及重试幂等。
+所有临时身份/鱼缸/进食记录通过子事务回滚；查询确认新项目三张表均为 0 行、两张 public 表的 RLS 开启。
+这是真实云端 SQL 证据，不是 GoTrue/JWT/HTTP 或真机通过。
+证据保存在 `/workspace/reviews/mofish-phase-b-cloud-live-20261019/`。
+
+安全 advisors：4 个受控 RPC 的 [SECURITY DEFINER 执行提示](https://supabase.com/docs/guides/database/database-linter?lint=0029_authenticated_security_definer_function_executable)，
+进食表的 [RLS 无策略 INFO](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy) 属于主动拒绝客户端直访的设计；
+已核对 owner 检查、固定 search_path、匿名无执行权及事件表无客户端权限，不为消除提示而放宽权限。
+性能 advisors 仅有新空库的 [Unused Index INFO](https://supabase.com/docs/guides/database/database-linter?lint=0005_unused_index)，保留预期索引。
 
 ## 用户最后需要配合的体验
 
