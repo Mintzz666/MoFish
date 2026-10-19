@@ -71,7 +71,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function makeHarness({ syncNow = async () => {}, resolveConflict = async () => {} } = {}) {
+function makeHarness({ syncNow = async () => {}, resolveConflict = async () => {}, backups = [] } = {}) {
   const doc = new FakeDocument();
   const snapshot = {
     user: { id: 'user-1', email: 'fish@example.test' },
@@ -106,7 +106,7 @@ function makeHarness({ syncNow = async () => {}, resolveConflict = async () => {
   const store = {
     readAuthFlow: () => null,
     clearAuthFlow() {},
-    listBackups: () => [],
+    listBackups: () => backups,
     forgetUser: () => 0
   };
   const auth = { signOut: async () => ({ remoteOk: true }) };
@@ -119,6 +119,18 @@ function makeHarness({ syncNow = async () => {}, resolveConflict = async () => {
   });
   return { doc, engine, snapshot, ui, el: id => doc.getElementById(id) };
 }
+
+test('backup summaries describe v2 scenery and retain v1 plant counts', () => {
+  const h = makeHarness({ backups: [
+    { key: 'v1', stamp: 1, state: { version: 1, fish: [{ id: 'old' }], plants: 4 } },
+    { key: 'v2', stamp: 2, state: { version: 2, fish: [{ id: 'new' }], decor: [
+      { kind: 'plant' }, { kind: 'rock' }, { kind: 'wood' }
+    ] } }
+  ] });
+  h.ui.render();
+  const details = h.el('backup-list').children.map(row => row.children[1].textContent);
+  assert.deepEqual(details, ['1 条鱼 · 3 件造景', '1 条鱼 · 4 株水草']);
+});
 
 test('manual sync runs once while pending and leaves a failure notice on rejection', async () => {
   const gate = deferred();

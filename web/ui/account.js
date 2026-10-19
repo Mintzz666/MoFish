@@ -167,7 +167,10 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
         ? new Date(stamp).toLocaleString('zh-CN', { hour12: false })
         : String(entry.stamp);
       const detail = doc.createElement('small');
-      detail.textContent = `${entry.state.fish.length} 条鱼 · ${entry.state.plants} 株水草`;
+      const scenery = Array.isArray(entry.state.decor)
+        ? `${entry.state.decor.length} 件造景`
+        : `${entry.state.plants} 株水草`;
+      detail.textContent = `${entry.state.fish.length} 条鱼 · ${scenery}`;
       li.append(label, detail);
       li.dataset.backupKey = entry.key;
       els.backupList.append(li);
