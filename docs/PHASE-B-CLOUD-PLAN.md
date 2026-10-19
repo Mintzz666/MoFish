@@ -1,30 +1,29 @@
-# 阶段 B 独立云端联调方案（新项目已创建，待 HTTP 验收）
+# 阶段 B 独立云端联调方案
 
-2026-10-19，分支 `codex/phase-b-review-polish`，本轮基线 `7606a1c8076895a04ea63e3afdf6d03683ced54c`。
-用户已确认使用推荐的 MoFish 组织、零新增费用时继续。实际项目报价为 $0/月，
-已创建新项目 `gbcfyqtbezkgkstrfbzn` 并应用三份迁移；**HTTP 冒烟与 B Worker 部署尚未执行**。
-新对话从 [PHASE-B-NEXT-CHAT.md](PHASE-B-NEXT-CHAT.md) 继续。
+2026-10-19 本机续接：真实 HTTP **64/64** 通过，独立 B Worker 已部署并完成线上文件/CSP/缓存核验。
+当前入口、源码 SHA、Cloudflare version、证据和待验收范围见 [PHASE-B-LOCAL-ACCEPTANCE.md](PHASE-B-LOCAL-ACCEPTANCE.md)。
+本机配置见 [PHASE-B-ENV-SETUP.md](PHASE-B-ENV-SETUP.md)，不需要 Codex Cloud 白名单、秘密注入或代理占位值。
+本文件下方保留原准备方案及历史 SQL 证据，历史“尚未部署/待配置”状态以本段和本机验收记录为准。
 
 ## 具体目标
 
 | 资源 | 目标 | 当前状态 |
 | --- | --- | --- |
 | Supabase | `MoFish-Phase-B-QA` / `gbcfyqtbezkgkstrfbzn`，区域 `ap-south-1` | 已在 MoFish 组织创建，三份迁移完成 |
-| Cloudflare | 独立 Worker `mofish-phase-b` | 只做部署预演，未创建 |
-| 测试网址 | 预计 `https://mofish-phase-b.tibo-reset-notifier.workers.dev/` | 规划地址，尚不是可用测试入口 |
+| Cloudflare | 独立 Worker `mofish-phase-b` | 本机已预演并部署 |
+| 测试网址 | `https://mofish-phase-b.tibo-reset-notifier.workers.dev/` | 已核验可用 |
 | A 项目 | `jxqlzuvpuaqwcdvgxnle` | 只读检查健康，仅有 A 两份迁移；B 脚本主动拒绝它 |
 | A 站点 | `mofish.tibo-reset-notifier.workers.dev` | 保持原站点及用户存档 |
 
 组织已由用户确认、项目实际报价 $0/月并已创建；不要重复创建，也不新增收费资源。
-旧服务密钥只绑定 A 域名，不能用其代理占位符访问新项目。新 B 密钥和两个域名正在由用户配置。
+本机使用用户安全填写的新 B Legacy service_role；不使用旧 A 密钥或云代理占位符。
 不合并 main、不打标签、不运行 release，不接触 Tibo、旧 Sites，不替换现有构建令牌。
 
 ## 执行顺序与当前进度
 
 1. 已完成组织、零费用范围确认及项目创建；不需要再询问相同授权。
-2. 用户需在环境设置增加 `gbcfyqtbezkgkstrfbzn.supabase.co` 和 `mofish-phase-b.tibo-reset-notifier.workers.dev`。
-3. 从连接取回公开 publishable 配置；新管理凭据通过独立安全变量注入，保留旧 A 凭据。
-   若连接不能提供管理凭据，由用户在环境设置中补配一次；不粘贴聊天、不提交 Git。
+2. 核验本机网络：B API 直连可达，Workers 域名本机直连超时，使用既有代理后可达；不改系统代理。
+3. 公开 publishable 配置已从连接恢复；B 管理凭据由用户填写在 Git 忽略、0600 的本机 `.env.phase-b`。
 4. 已在新项目按顺序应用三份迁移，并检查迁移历史及 advisors：
    `20261016065742_phase_a_cloud_saves.sql`、`20261016070336_phase_a_cloud_hardening.sql`、
    `20261018120000_phase_b_growth_and_aquascaping.sql`。云端 MCP 自动编号见续接文档；不要盲目 `db push` 或重放。
@@ -43,19 +42,20 @@ MOFISH_B_SUPABASE_ANON_KEY=<新项目公开publishable或anon配置>
 MOFISH_B_SMOKE_SERVICE_ROLE_KEY=<仅新项目Legacy service_role，安全注入>
 ```
 
-B 不回退使用 A 的任何配置。管理凭据由 GoTrue 只读预检验证，不因本地无法解析代理占位符就认定缺失。
+B 不回退使用 A 的任何配置。本机使用真实管理凭据，由 GoTrue 只读预检验证；不将云端代理占位值当作本机凭据。
+下面命令默认普通运行，确实需要且已配置环境代理时才加 `NODE_USE_ENV_PROXY=1`。
 `sb_secret_*` 沿用现有显式拒绝规则，不把 opaque key 伪装成用户 JWT。
 
 ```sh
-NODE_USE_ENV_PROXY=1 npm run test:cloud:b
-NODE_USE_ENV_PROXY=1 npm run deploy:cloudflare:b -- --dry-run
+npm run test:cloud:b
+npm run deploy:cloudflare:b -- --dry-run
 # 以下实际部署仅在测试资源获授权、迁移与冒烟通过后执行：
-NODE_USE_ENV_PROXY=1 npm run deploy:cloudflare:b
+npm run deploy:cloudflare:b
 ```
 
 原 `test:cloud` / `deploy:cloudflare` 保持 A 入口。B Worker 名固定为 `mofish-phase-b`，不能传任意目标名。
 部署前精确核对新项目 ref 与 HTTPS 根地址并拒绝 A 项目；构建子进程显式使用校验后的新公开配置。
-管理密钥不进入发布产物。
+管理密钥不进入发布产物。B 部署支持已有 Wrangler OAuth，账号 ID 仍显式指定；不复制 OAuth token。
 
 ## 自动化覆盖与证据边界
 

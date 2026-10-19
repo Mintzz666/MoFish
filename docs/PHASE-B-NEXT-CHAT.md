@@ -11,10 +11,10 @@
 - 仓库 `Mintzz666/MoFish`，分支 `codex/phase-b-review-polish`。本轮开发基线 `bbe13e7ce64617bb4dda9926e10c26dccafb3950`。
 - 新 B 项目 `MoFish-Phase-B-QA`，ref `gbcfyqtbezkgkstrfbzn`，API `https://gbcfyqtbezkgkstrfbzn.supabase.co`，区域 `ap-south-1`。
 - A 项目 `jxqlzuvpuaqwcdvgxnle` 保持只有两份 A 迁移；不要在该项目执行 B 脚本、迁移或修改 Auth 配置。
-- 计划 Worker `mofish-phase-b`，网址 `https://mofish-phase-b.tibo-reset-notifier.workers.dev/`。
-  **Worker 尚未部署，该网址尚不是可用测试入口。**
+- 已部署 Worker `mofish-phase-b`，网址 `https://mofish-phase-b.tibo-reset-notifier.workers.dev/`。
+  **已在本机续接轮部署并核验，详见下方最新状态。**
 - 新项目三份迁移已经成功应用，真实 SQL 31/31 通过，临时数据全部回滚；随后查询 auth.users/aquariums/mofish_feed_events 均为 0 行。
-- HTTP 冒烟未执行，因为用户正在为新对话配置网络与独立 B 管理密钥；公开 publishable 配置已经从连接取回。
+- 历史交接时 HTTP 未执行；本机续接轮已 64/64 通过，公开配置已从连接取回。
   旧工作区的忽略文件 `.env.phase-b` 只保存新 B 的公开配置，换环境可能不存在，可以从连接重新取回。
 
 MCP 自动生成的迁移历史版本与仓库文件时间不同，但 SQL 来自同一份文件，不能盲目 `db push` 重放：
@@ -29,37 +29,25 @@ MCP 自动生成的迁移历史版本与仓库文件时间不同，但 SQL 来�
 A hardening `83736e39e57690a501a5cd9b4fe7dcc883f9254357519ba7e6b8009f78ca8b41`；
 B `8f6ef4ecfb861590b1de115175a04631d71bd2b337dfcc8465941658e126730f`。
 
-## 用户正在配置的内容
+## 本机续接状态（2026-10-19，优先于历史状态）
 
-给用户的详细步骤见 [PHASE-B-ENV-SETUP.md](PHASE-B-ENV-SETUP.md)，包含网络、新秘密和新项目 Auth 回调。
+HTTP 64/64 通过；独立 B Worker 已部署。源码 `a7706e620d89cbd8a3530e9f2fb4492eb58afffd`，
+Cloudflare version `0b424279-d44b-4d1f-b069-ceea7678d49d`。
+线上六份文件与本机构建逐字节一致；CSP/缓存/私密路径已检查；A Worker 部署历史前后一致。
+B Site URL/Redirect URLs 已由 localhost 改为实际 B 根地址；默认与显式 recovery 链接 2/2 正确，未发邮件。
 
-网络允许域名追加（保留原域名）：
+工作树 `/Users/mintzz/.codex/worktrees/mofish-phase-b-acceptance/MoFish`，开发分支 `codex/phase-b-review-polish`。
+原 `/Users/mintzz/Documents/MoFish` 仍为干净的 Hermes 分支。GitHub 开发分支最终 SHA 以交接回复/远端为准；
+部署源码 SHA 固定如上，后续文档提交不代表重新部署。
 
-- `gbcfyqtbezkgkstrfbzn.supabase.co`
-- `mofish-phase-b.tibo-reset-notifier.workers.dev`
+本机 `.env.phase-b` 已准备（Git 忽略、0600），包含公开配置和用户填写的新 B 管理密钥；不要输出内容。
+Node 24.19.0 已有；本机 Cloudflare OAuth 已验证，无需新令牌。无需设置 Codex Cloud 网络白名单或秘密注入。
+API HTTP 测试使用普通命令成功；Workers 线上读取需要已有环境代理时使用 `NODE_USE_ENV_PROXY=1`。
 
-新秘密变量 `MOFISH_B_SMOKE_SERVICE_ROLE_KEY`：新 B 项目的 Legacy service_role 密钥，
-注入目标仅为 `gbcfyqtbezkgkstrfbzn.supabase.co`。不能复用 A 密钥；不要求用户把密钥发到聊天。
-其余 B 公开变量为 `MOFISH_B_PROJECT_REF`、`MOFISH_B_SUPABASE_URL`、`MOFISH_B_SUPABASE_ANON_KEY`，
-可从连接恢复至环境或忽略的 `.env.phase-b`。B 脚本不会回退使用 A 配置。
-
-## 下一步按顺序执行
-
-1. 读取 `AGENTS.md`、`docs/HANDOFF.md`、`docs/PHASE-B-CLOUD-PLAN.md`、本文件和 `docs/POST-A-ACCEPTANCE.md`。
-   核对真实远端分支、HEAD、本地未提交内容；保留现有改动，缺工作区时再获取本分支。
-2. 按 cloud-environment-runtime / Supabase skill 核验当前环境状态、域名与秘密注入，保留代理，所有输出脱敏。
-   环境可使用代理占位字符串，不能仅因本地无法解析 JWT 就认定凭据缺失；运行脚本的只读 GoTrue 管理预检来确认。
-3. 核对新项目迁移与配置。缺少公开变量时从已连接的新 B 项目取回 publishable 配置，不能把管理密钥放进构建。
-4. Node 24 下沿用代理运行 `NODE_USE_ENV_PROXY=1 npm run test:cloud:b`。
-   仅使用脚本新建的随机临时账号，验证 v1/v2、造景、双会话进食、成长、模拟离线重放、冲突备份及换号隔离，
-   最后确认账号和关联数据清理。失败先排查修复，不能把本地替身结果当作真实 HTTP 通过。
-5. 通过后运行 `NODE_USE_ENV_PROXY=1 npm run deploy:cloudflare:b`，只部署独立 B Worker。
-   记录精确源码 SHA 和 Cloudflare version，验证实际页面、配置/CSP/缓存与新项目 Auth Site URL/Redirect URLs。
-   新项目默认可能仍指 localhost；无法自动更改时给用户确切的新项目设置步骤，不碰 A 的 Auth 设置。
-6. 如需临时浏览器账号，使用新 B 项目的随机临时身份并最终清理。接着给用户电脑/手机的集中验收步骤。
-   iOS/Android 真机、触感、发热、音效、最终审美仍待验收，不用视口仿真替代。
-7. 更新验收/交接并推送开发分支，保留必要脱敏证据，清理自己启动的临时进程/测试数据。
-   新 B 项目与供用户验收的 Worker 需要保留，不在任务清理时删除。
+完整本轮证据、范围和清理见 [PHASE-B-LOCAL-ACCEPTANCE.md](PHASE-B-LOCAL-ACCEPTANCE.md)。
+用户接下来按 [PHASE-B-DEVICE-ACCEPTANCE.md](PHASE-B-DEVICE-ACCEPTANCE.md) 集中做真机/音效/审美验收，
+收到反馈后仅修复实际问题、补相关回归并更新矩阵；尚不能宣布 B 已收口。
+不无故重跑已有通过检查，不重复迁移、建项目或部署；不合并 main、不打标签、不运行 release、不启动 C。
 
 ## 已有证据
 
@@ -67,4 +55,5 @@ B `8f6ef4ecfb861590b1de115175a04631d71bd2b337dfcc8465941658e126730f`。
 - 本轮：新 B 项目真实 SQL 31/31，角色权限、RLS、版本/造景、成长/进食/限额、回滚清理全部通过。
 - advisors 中 4 个受控 SECURITY DEFINER、事件表 RLS 无策略及新空库 unused index 提示已审阅，详见云方案；不放宽权限来消除提示。
 - 旧环境证据目录 `/workspace/reviews/mofish-phase-b-cloud-live-20261019/`；换环境不能假定目录仍存在。
-- 本轮最终本地测试与清理结果以 `docs/HANDOFF.md` 顶部及交接回复为准。
+- 本机续接：最终严格测试 187/187、零跳过；HTTP 64/64、部署及 Safari 冒烟通过。真机仍待验收。
+- 最终清理及交接以 `docs/HANDOFF.md` 顶部及本机验收记录为准。

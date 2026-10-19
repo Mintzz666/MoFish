@@ -1,5 +1,38 @@
 # MoFish 交接
 
+## 本机阶段 B 自动化与独立部署完成，待真机验收（2026-10-19）
+
+本轮全程 Codex 本地 Project，从远端精确交接 `85211641c676b0cc7c7686d4ca583120975caf3b` 续接。
+原 `/Users/mintzz/Documents/MoFish` 的 Hermes 分支与内容保留；独立工作树
+`/Users/mintzz/.codex/worktrees/mofish-phase-b-acceptance/MoFish` 维护 `codex/phase-b-review-polish`。
+
+- 真实 B HTTP **64/64** 通过；最终本机严格测试 **187/187、零跳过**，构建/部署预演通过。
+- 已部署 [独立 B 入口](https://mofish-phase-b.tibo-reset-notifier.workers.dev/)，
+  源码 **`a7706e620d89cbd8a3530e9f2fb4492eb58afffd`**，Cloudflare version
+  **`0b424279-d44b-4d1f-b069-ceea7678d49d`**，部署 `d12d98d3-1082-46cc-a6f8-03e13e4c1ccc`，100% 流量。
+  线上 `/deployment.json` 与 Cloudflare 说明记录该 SHA；本文件随后的文档提交不是重新部署。
+- 已核验线上六个关键文件字节一致、公开配置只指新 B、CSP 和缓存正确、私密/源模块路径 404。
+- 新 B Auth 原为 localhost、无白名单；已保存 Site URL/Redirect URLs 为 B 根地址，默认/显式 recovery 链接 **2/2** 正确，未发邮件。
+- Safari 27.0.1 真实线上登录、造景同步/刷新、冲突/备份、2D/夜间及退出已验证。
+  发现并修复 v2 备份摘要显示 `undefined 株水草`，补 v1/v2 回归并重新部署、线上确认。
+- 本机公开配置从连接恢复，私密值由用户填写于 Git 忽略、0600 的 `.env.phase-b`；现有 Cloudflare OAuth 可用，未创建/复制/撤销令牌。
+  不需要 Codex Cloud 环境；B API 直连通过，Workers 文件读取使用既有环境代理，未改系统网络配置。
+- 冒烟 2、回调 1、浏览器 1 共四个随机临时账号均已删除并确认 404；B 三张表最终计数均 0。
+  Safari 自建测试标签关闭、用户原标签与应用保留；测试数据库和 CLI 均已结束，无预览服务。
+  临时身份脚本/注册文件清除，脱敏日志与正常缓存保留；B 项目/Worker 保留供验收。
+
+**结论：可交付用户真机验收，B 尚未收口。** 触控、真实离线重连、持续运行发热、音效、完整跨浏览器和最终审美仍待用户确认。
+按 [集中验收步骤](PHASE-B-DEVICE-ACCEPTANCE.md) 完成一次反馈；完整证据及工具/网络边界见
+[本机验收记录](PHASE-B-LOCAL-ACCEPTANCE.md)，概要 JSON 在 `docs/evidence/phase-b-local-20261019.json`。
+本机脱敏证据 `.local/phase-b-acceptance-20261019/`，清理记录 `cleanup.json`。
+现有 A 数据库/Worker、Tibo、旧 Sites 和既有用户存档未写入；A Worker 部署历史前后相等。
+未合并 main、未打标签、未运行 release、未启动多人 C。最终开发分支提交 SHA 以交接回复/远端为准。
+
+---
+
+以下为历史交接记录，状态以本节及本机验收记录为准。
+
+
 ## 独立 B 项目已创建，等待新环境配置续接（2026-10-19）
 
 用户已确认推荐的 MoFish 组织与零费用继续条件；实际报价 $0/月，已创建 `MoFish-Phase-B-QA`

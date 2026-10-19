@@ -1,0 +1,110 @@
+{
+  "date": "2026-10-19",
+  "environment": "local macOS Project; Node 24.19.0; Wrangler 4.151.0",
+  "handoff_sha": "85211641c676b0cc7c7686d4ca583120975caf3b",
+  "deployed_source_sha": "a7706e620d89cbd8a3530e9f2fb4492eb58afffd",
+  "worker": "mofish-phase-b",
+  "url": "https://mofish-phase-b.tibo-reset-notifier.workers.dev/",
+  "project_ref": "gbcfyqtbezkgkstrfbzn",
+  "cloudflare_version": "0b424279-d44b-4d1f-b069-ceea7678d49d",
+  "cloudflare_deployment": "d12d98d3-1082-46cc-a6f8-03e13e4c1ccc",
+  "traffic_percentage": 100,
+  "real_http_smoke": {
+    "passed": 64,
+    "total": 64,
+    "used_proxy_flag": false
+  },
+  "local_strict_tests": {
+    "passed": 187,
+    "total": 187,
+    "skipped": 0
+  },
+  "auth_recovery_redirect_checks": {
+    "default": "B root URL",
+    "explicit": "B root URL",
+    "emails_sent": 0
+  },
+  "safari": "27.0.1 actual desktop browser; login, scenery sync/refresh, conflict/local choice+backup, 2D/night, corrected backup summary, cache cleanup, logout observed",
+  "A_worker_deployment_history_unchanged": true,
+  "temporary_accounts_deleted": 4,
+  "final_cloud_counts": {
+    "users": 0,
+    "aquariums": 0,
+    "feed_events": 0
+  },
+  "assets": [
+    {
+      "file": "index.html",
+      "status": 200,
+      "exactBytes": true,
+      "sha256": "a4eb6f1702a40b46826ab0e1cd3e8728c6050873a02c81b8039164178ace0e14",
+      "cacheControl": "public, max-age=0, must-revalidate",
+      "contentType": "text/html",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://*.supabase.co; form-action 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'",
+      "etag": "W/\"ea91a8a231e9a9f13a58b9bc4e310f73\""
+    },
+    {
+      "file": "app.js",
+      "status": 200,
+      "exactBytes": true,
+      "sha256": "e04481e879726997e2aaeaf86f9ceb831383ab7934a8c0686d9aa8009bb40a70",
+      "cacheControl": "public, max-age=0, must-revalidate",
+      "contentType": "text/javascript",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://*.supabase.co; form-action 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'",
+      "etag": "W/\"394631a5f0579282a5b406ec2b958a08\""
+    },
+    {
+      "file": "style.css",
+      "status": 200,
+      "exactBytes": true,
+      "sha256": "afc744ca8f02aebc86c07acd1e1c64276864268633d546e5f0bd4e9065c332cb",
+      "cacheControl": "public, max-age=0, must-revalidate",
+      "contentType": "text/css",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://*.supabase.co; form-action 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'",
+      "etag": "W/\"fc9af354cda72ee8deb42df07d3a362f\""
+    },
+    {
+      "file": "config.js",
+      "status": 200,
+      "exactBytes": true,
+      "sha256": "c86205494296ee5e619a6bd7231591612667d08ae2915a9373f3093885c0d03c",
+      "cacheControl": "no-cache",
+      "contentType": "text/javascript",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://*.supabase.co; form-action 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'",
+      "etag": "W/\"4490dcfa067aeef455ce433dd662d892\""
+    },
+    {
+      "file": "sw.js",
+      "status": 200,
+      "exactBytes": true,
+      "sha256": "310f29b7008c04242a0c19d09e532ceeec6360b3a3472b759656d723fcfd3e3a",
+      "cacheControl": "no-cache",
+      "contentType": "text/javascript",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://*.supabase.co; form-action 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'",
+      "etag": "W/\"6af9dd50b5e565c670a8bc81d3174b26\""
+    },
+    {
+      "file": "deployment.json",
+      "status": 200,
+      "exactBytes": true,
+      "sha256": "024b33e1a3ed8807d51a5f4fabe80a0c165e958cea6b08b09a189a31d67e1175",
+      "cacheControl": "public, max-age=0, must-revalidate",
+      "contentType": "application/json",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://*.supabase.co; form-action 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'",
+      "etag": "W/\"f7e8c27f057774877bc09bf66b98270c\""
+    },
+    {
+      "file": ".env.phase-b",
+      "status": 404
+    },
+    {
+      "file": "model.js",
+      "status": 404
+    },
+    {
+      "file": "cloud/api.js",
+      "status": 404
+    }
+  ],
+  "acceptance": "device/touch/heat/audio/aesthetics and user approval pending"
+}
