@@ -6,7 +6,7 @@
 // - 云端私有数据一律不缓存：即使将来 API 变成同源，也要先把它从 FILES 与本分支里排除。
 const CACHE = 'mofish-static-v3';
 // 只列发布产物：app.js 由 build.mjs 打包（含 three 与认证 SDK），源码模块不单独上线。
-const FILES = ['./', './index.html', './style.css', './app.js', './config.js', './icon.svg', './manifest.webmanifest'];
+const FILES = ['./', './index.html', './style.css', './sharing.css', './app.js', './config.js', './icon.svg', './manifest.webmanifest'];
 
 self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(FILES))));
 

@@ -64,7 +64,8 @@ export async function runPhaseBChecks({ apiA, apiA2, apiB, initialRow, call, acc
     apiA2.recordFeeding(id, operationId, fish.id, 1)
   ]);
   requireCheck(pair.every(item => item.ok) && pair.filter(item => item.row?.duplicate === true).length === 1,
-    'B：双会话并发重放同一进食事件，仅一条新记录');
+    'B：双会话并发重放同一进食事件，仅一条新记录',
+    pair.map(item => JSON.stringify({http:item.status,kind:item.kind,status:item.row?.status,duplicate:item.row?.duplicate,code:item.row?.error_code})).join(' / '));
   const unchanged = await apiA.ensureAquarium(upgraded, 2);
   requireCheck(unchanged.ok && Number(unchanged.row?.revision) === Number(current.row.revision)
     && equal(unchanged.row.state_json, upgraded), 'B：进食入账不直接修改成长、meals 或 revision');

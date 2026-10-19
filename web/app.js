@@ -21,6 +21,10 @@ import { createAccountUI } from './ui/account.js';
 import { createView3D } from './aquarium/view3d.js';
 import { createView2D } from './view2d.js';
 import { createDecorHistory } from './decor-history.js';
+import { createSharingApi } from './cloud/sharing-api.js';
+import { createSharedSyncEngine } from './cloud/shared-sync.js';
+import { createCollaborationRouter } from './cloud/collaboration-router.js';
+import { createSharingUI } from './ui/sharing.js';
 
 const $ = (id) => document.getElementById(id);
 const bootAt = typeof performance !== 'undefined' ? performance.now() : 0;
@@ -61,6 +65,10 @@ const store = createLocalStore(localStorage);
 const config = readCloudConfig(globalThis.__MOFISH_CONFIG__ || {});
 const stack = createCloudStack({ config, store, emailRedirectTo: location.origin + location.pathname });
 let accountUI = null;
+let sharingUI = null;
+let collaboration = null;
+let sharedSignature = '';
+const collaborationEnabled = globalThis.__MOFISH_CONFIG__?.phase === 'c';
 
 let state;
 let loadWarning = false;
@@ -219,7 +227,7 @@ function applyEditMode(next) {
 function showTip(text) { $('tank-tip').textContent = text; }
 
 // ------------------------------------------------------------------ 同步引擎
-const engine = createSyncEngine({
+const legacyEngine = createSyncEngine({
   api: stack.api,
   store,
   getState: () => state,
@@ -242,11 +250,59 @@ const engine = createSyncEngine({
       lastStatusMessage = s.message;
       toast(s.message);
     }
+    if (collaboration?.engine.isShared) return;
     if (accountUI) accountUI.render();
     refreshPanels();
+    refreshSharedAccess();
   },
   onNotice: (message) => toast(message)
 });
+
+const sharingApi = createSharingApi({ url: config.url, anonKey: config.anonKey, auth: stack.auth });
+const sharedEngine = createSharedSyncEngine({
+  api: sharingApi, store, getState: () => state, setState: next => applyState(next),
+  isOnline: () => navigator.onLine !== false,
+  onStatus: snap => {
+    if (!collaboration?.engine.isShared) return;
+    $('save-status').textContent = ({synced:'已同步到共享鱼缸',syncing:'正在与伙伴同步…',offline:'离线 · 改动已保留',conflict:'同一物件有不同改动',signed_out:'共享权限已变更',error:'同步暂未完成'})[snap.status] || '连接共享鱼缸中…';
+    accountUI?.render(); refreshAll(); refreshSharedAccess();
+    if (snap.message && snap.message !== lastStatusMessage) { lastStatusMessage = snap.message; toast(snap.message); }
+  }, onNotice: toast,
+  onRevoked: () => collaboration?.goPersonal({ force: true }).then(() => toast('已回到个人鱼缸。共享缸的本机未上传改动留作备份。')).catch(() => {})
+});
+collaboration = createCollaborationRouter({legacy:legacyEngine, shared:sharedEngine, store, autoShared:collaborationEnabled, preparePersonal:async()=>{
+  const userId=collaboration.context().user?.id;
+  const result=await sharingApi.preparePersonal(store.readGuest() || initial());
+  if(result.ok&&userId)store.writeCurrent(userId,{aquariumId:result.data.aquarium_id});
+  if(!result.ok&&result.code==='network_error'&&userId){
+    const cached=store.readCurrent(userId);
+    if(cached?.aquariumId&&store.readMeta(userId,cached.aquariumId)?.kind==='shared-v1')return {ok:true,data:{aquarium_id:cached.aquariumId}};
+  }
+  return result;
+}, onModeChange:()=>{
+  undoStack.clear(); selectedDecorId=null; pendingDecorId=null; activeFishId=null; applyEditMode('view');
+}});
+const engine = collaboration.engine;
+function canEditAquarium() { return !collaborationEnabled || engine.canEdit; }
+function refreshSharedAccess() {
+  if (!$('sharing-button')) return;
+  $('sharing-button').hidden = !collaborationEnabled;
+  const ctx = collaboration?.context();
+  const names = {owner:'主人',editor:'一起照看',viewer:'仅观看'};
+  $('room-label').textContent = ctx?.isShared && ctx.role !== 'owner' ? `${names[ctx.role] || '正在连接'} · 朋友的水下花园` : '我的水下花园';
+  $('collaboration-banner').hidden = !ctx?.isShared || ctx.role === 'owner';
+  $('collaboration-copy').textContent = ctx?.role === 'viewer' ? '你正在安静观赏朋友的鱼缸，鱼儿和造景会随伙伴的更新而变化。' : '和伙伴一起照看。不同物件的改动会合并，同一物件有分歧时保留两份。';
+  const signature = JSON.stringify([ctx?.user?.id,ctx?.aquariumId,ctx?.role,ctx?.isShared]);
+  if (signature !== sharedSignature) { sharedSignature=signature; sharingUI?.render(); }
+  const readonly = ctx?.isShared && !engine.canEdit;
+  for (const id of ['feed','night','detail-rename','rename']) $(id).disabled = readonly;
+  $('import').disabled = Boolean(ctx?.isShared);
+  $('import').title = ctx?.isShared ? '协作存档不能整缸覆盖；可先导出备份，退出账号后在游客模式导入。' : '';
+  const importNote=$('import-note');
+  if(importNote)importNote.textContent=ctx?.isShared ? '为保护伙伴的改动，云端协作存档不接受整缸导入。请先导出备份；需要查看旧存档时，退出账号后在游客模式导入。' : '导入会替换当前鱼缸，请先导出备份。旧版存档会自动升级，鱼的名字、成长和喂食记录都会保留。';
+  if (readonly && editMode !== 'view') applyEditMode('view');
+  $('mode-decor').disabled = readonly || viewMode === '2d';
+}
 
 // 未登录（游客）时保留本机离线成长；已登录时成长由服务端按时间结算。
 const hasSession = Boolean(store.readSession());
@@ -256,6 +312,10 @@ const absent = hasSession ? 0 : catchUp(state);
 let persistedCanonical = canonicalState(state);
 
 function applyState(next) {
+  if (pendingDecorId && engine.isShared && !next.decor.some(item=>item.id===pendingDecorId)) {
+    pendingDecorId=null; selectedDecorId=null;
+    toast('鱼缸有新更新，尚未放下的造景已取消；可以重新摆放。');
+  }
   state = next;
   view?.setState(state);
   view?.setNight(state.night);
@@ -290,6 +350,7 @@ function save({ silent = false } = {}) {
 // ------------------------------------------------------------------ 喂食与进食
 let pendingBiteHint = 0;
 function handleEat(fishId) {
+  if (!canEditAquarium()) return;
   const fish = state.fish.find((f) => f.id === fishId);
   if (!fish) return;
   if (engine.isCloud) {
@@ -311,6 +372,7 @@ function handleEat(fishId) {
 }
 
 function feed() {
+  if (!canEditAquarium()) { toast('当前仅可观看，小鱼会由主人和伙伴照看。'); return; }
   view?.feedRandom?.();
 }
 
@@ -321,6 +383,7 @@ function pushUndo() {
 }
 
 function restoreFromUndo() {
+  if (!canEditAquarium()) return;
   try {
     const next = undoStack.restore(state);
     if (!next) { refreshDecorPanel(); toast('没有可以撤销的操作了。'); return; }
@@ -340,6 +403,7 @@ function selectDecor(id) {
 }
 
 function addDecorObject(kind) {
+  if (!canEditAquarium()) return;
   if (viewMode === '2d') { toast('布景编辑需要 3D 模式，请先切回 3D。'); return; }
   const types = KIND_META[kind].types;
   const type = types[Math.floor(Math.random() * types.length)];
@@ -362,6 +426,7 @@ function addDecorObject(kind) {
 }
 
 function moveDecorFromView(id, transform, commit) {
+  if (!canEditAquarium()) return;
   if (!state.decor.some((d) => d.id === id)) return;
   if (lastDragDecorId !== id) {
     pushUndo();
@@ -378,6 +443,7 @@ function moveDecorFromView(id, transform, commit) {
 }
 
 function rotateDecor() {
+  if (!canEditAquarium()) return;
   const item = state.decor.find((d) => d.id === selectedDecorId);
   if (!item) return;
   pushUndo();
@@ -387,6 +453,7 @@ function rotateDecor() {
 }
 
 function scaleDecor(delta) {
+  if (!canEditAquarium()) return;
   const item = state.decor.find((d) => d.id === selectedDecorId);
   if (!item) return;
   pushUndo();
@@ -396,6 +463,7 @@ function scaleDecor(delta) {
 }
 
 function reshuffleSelectedDecor() {
+  if (!canEditAquarium()) return;
   const item = state.decor.find((d) => d.id === selectedDecorId);
   if (!item) return;
   pushUndo();
@@ -406,6 +474,7 @@ function reshuffleSelectedDecor() {
 }
 
 function deleteSelectedDecor() {
+  if (!canEditAquarium()) return;
   const item = state.decor.find((d) => d.id === selectedDecorId);
   if (!item) return;
   pushUndo();
@@ -419,6 +488,7 @@ function deleteSelectedDecor() {
 }
 
 function confirmPendingDecor() {
+  if (!canEditAquarium()) return;
   if (!pendingDecorId) return;
   pendingDecorId = null;
   save();
@@ -427,6 +497,7 @@ function confirmPendingDecor() {
 }
 
 function cancelPendingDecor() {
+  if (!canEditAquarium()) return;
   if (!pendingDecorId) return;
   const id = pendingDecorId;
   const { state: next } = removeDecor(state, id);
@@ -476,6 +547,7 @@ function refreshAll() {
   $('scene-sub').textContent = state.night ? '灯熄了，鱼也慢下来' : '随时回来，都有鱼在等你';
   $('night').setAttribute('aria-pressed', String(state.night));
   $('sound').setAttribute('aria-pressed', String(Boolean(audioCtx && audioCtx.state === 'running')));
+  refreshSharedAccess();
 }
 
 function refreshCounters() {
@@ -484,13 +556,13 @@ function refreshCounters() {
   const woods = state.decor.filter((d) => d.kind === 'wood').length;
   $('aquarium-count').textContent = `${state.fish.length} 条小鱼 · ${state.decor.length} 件造景`;
   $('fish-counter').textContent = `${state.fish.length} / ${MAX_FISH} 位小伙伴`;
-  $('add-fish').disabled = state.fish.length >= MAX_FISH;
+  $('add-fish').disabled = !canEditAquarium() || state.fish.length >= MAX_FISH;
   $('plant-counter').textContent = `水草 ${plants} / ${KIND_META.plant.max}`;
-  $('add-plant').disabled = plants >= KIND_META.plant.max || state.decor.length >= DECOR_MAX;
+  $('add-plant').disabled = !canEditAquarium() || plants >= KIND_META.plant.max || state.decor.length >= DECOR_MAX;
   $('rock-counter').textContent = `石头 ${rocks} / ${KIND_META.rock.max}`;
-  $('add-rock').disabled = rocks >= KIND_META.rock.max || state.decor.length >= DECOR_MAX;
+  $('add-rock').disabled = !canEditAquarium() || rocks >= KIND_META.rock.max || state.decor.length >= DECOR_MAX;
   $('wood-counter').textContent = `沉木 ${woods} / ${KIND_META.wood.max}`;
-  $('add-wood').disabled = woods >= KIND_META.wood.max || state.decor.length >= DECOR_MAX;
+  $('add-wood').disabled = !canEditAquarium() || woods >= KIND_META.wood.max || state.decor.length >= DECOR_MAX;
 }
 
 function refreshFishList() {
@@ -642,7 +714,7 @@ $('add-fish').onclick = () => openSpeciesPicker();
 $('add-plant').onclick = () => addDecorObject('plant');
 $('add-rock').onclick = () => addDecorObject('rock');
 $('add-wood').onclick = () => addDecorObject('wood');
-$('night').onclick = () => { state.night = !state.night; save(); view?.setNight(state.night); refreshAll(); };
+$('night').onclick = () => { if (!canEditAquarium()) return; state.night = !state.night; save(); view?.setNight(state.night); refreshAll(); };
 $('sound').onclick = () => setSound(!(audioCtx && audioCtx.state === 'running'));
 $('fullscreen').onclick = async () => {
   try {
@@ -668,6 +740,7 @@ $('quality').onchange = (event) => {
 };
 $('mode-view').onclick = () => applyEditMode('view');
 $('mode-decor').onclick = () => {
+  if (!canEditAquarium()) return;
   if (viewMode === '2d') { toast('布景编辑需要 3D 模式。'); return; }
   applyEditMode('decor');
 };
@@ -697,6 +770,7 @@ for (const btn of floatBar.querySelectorAll('[data-decor-action]')) {
 }
 document.querySelectorAll('[data-decor-nudge]').forEach(button => {
   button.onclick = () => {
+    if (!canEditAquarium()) return;
     const item = state.decor.find(d => d.id === selectedDecorId);
     if (!item) return;
     const [dx, dz] = button.dataset.decorNudge.split(',').map(Number);
@@ -721,6 +795,7 @@ document.addEventListener('keydown', (event) => {
 
 // ------------------------------------------------------------------ 鱼：添加 / 改名
 function openSpeciesPicker() {
+  if (!canEditAquarium()) return;
   if (state.fish.length >= MAX_FISH) return;
   const box = $('species-options');
   box.replaceChildren();
@@ -748,6 +823,7 @@ $('species-random').onclick = () => {
 };
 
 function addFish(typeId) {
+  if (!canEditAquarium()) return;
   if (state.fish.length >= MAX_FISH) return;
   const fish = makeFish(state.fish.length, Date.now(), { species: typeId });
   state.fish.push(fish);
@@ -770,6 +846,7 @@ function openFishDialog(id) {
   $('fish-dialog').showModal();
 }
 $('rename').onclick = () => {
+  if (!canEditAquarium()) return;
   const fish = state.fish.find((f) => f.id === activeFishId);
   if (!fish) return;
   fish.name = $('fish-name').value.trim().slice(0, 16) || fish.name;
@@ -795,6 +872,7 @@ $('import').onclick = () => $('import-file').click();
 $('import-file').onchange = async (event) => {
   const file = event.target.files[0];
   if (!file) return;
+  if (engine.isShared) { toast('请先导出备份，退出账号后可在游客模式导入旧存档。'); event.target.value=''; return; }
   try {
     if (file.size > 400000) throw new Error('too large');
     const next = validate(JSON.parse(await file.text()));
@@ -833,6 +911,15 @@ accountUI = createAccountUI({
     refreshAll();
   }
 });
+
+if (collaborationEnabled) sharingUI = createSharingUI({button:$('sharing-button'),controller:{
+  context:collaboration.context,
+  listAquariums:sharingApi.listAquariums, openAquarium:collaboration.openAquarium, goPersonal:()=>collaboration.goPersonal(),
+  listMembers:sharingApi.listMembers,listInvites:sharingApi.listInvites,createInvite:sharingApi.createInvite,
+  revokeInvite:sharingApi.revokeInvite,setMemberRole:sharingApi.setMemberRole,removeMember:sharingApi.removeMember,
+  acceptInvite:sharingApi.acceptInvite,leaveAquarium:sharingApi.leaveAquarium
+},onNotice:toast});
+$('return-personal').onclick=()=>collaboration.goPersonal().then(r=>{if(!r.ok)toast(r.error||'请先处理未同步改动。');});
 
 const callback = parseAuthCallback({ hash: location.hash, search: location.search });
 if (callback.kind !== 'none') {

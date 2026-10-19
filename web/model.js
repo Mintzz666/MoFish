@@ -23,6 +23,15 @@ export const LOOK_VERSION = 1;
 
 const DAY_MS = 86400000;
 const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
+// Preserve already-normalized values exactly: adding 2π on every read changes
+// decimal payloads by an ulp and can cause false shared-operation conflicts.
+function normalizedRotation(n) {
+  const turn = Math.PI * 2;
+  if (n >= 0 && n < turn) return n;
+  const remainder = n % turn;
+  return remainder < 0 ? remainder + turn : remainder;
+}
+
 
 /**
  * 成长规则（四阶段）。默认体验：持续照料约 14 天成年，正常进食约 10 天。
@@ -428,7 +437,7 @@ function validateV2(raw, now) {
       type,
       x: clamp(d.x, 0, 1),
       z: clamp(d.z, 0, 1),
-      rot: ((d.rot % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2),
+      rot: normalizedRotation(d.rot),
       scale: clamp(d.scale, 0.6, 1.6),
       seed: Number.isFinite(d.seed) ? (d.seed >>> 0) : hashSeed(`decor:${d.id}`),
       v: LOOK_VERSION
@@ -555,7 +564,7 @@ export function clampTransform({ x, z, rot, scale }) {
   return {
     x: clamp(Number.isFinite(x) ? x : 0.5, 0, 1),
     z: clamp(Number.isFinite(z) ? z : 0.5, 0, 1),
-    rot: Number.isFinite(rot) ? ((rot % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2) : 0,
+    rot: Number.isFinite(rot) ? normalizedRotation(rot) : 0,
     scale: clamp(Number.isFinite(scale) ? scale : 1, 0.6, 1.6)
   };
 }

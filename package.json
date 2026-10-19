@@ -17,7 +17,10 @@
     "deploy:cloudflare:b": "node scripts/deploy-cloudflare.mjs --phase=b",
     "test:e2e": "node tests/e2e/cloud-e2e.mjs",
     "test:concurrency": "node --test tests/sql/concurrency.test.js tests/sql/concurrency-safety.test.js",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "test:cloud:c": "node scripts/phase-c-cloud-smoke.mjs",
+    "deploy:cloudflare:c": "node scripts/deploy-cloudflare.mjs --phase=c",
+    "test:e2e:c:real": "node --env-file=.env.phase-c tests/e2e/phase-c-real.mjs"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.10",
@@ -26,6 +29,7 @@
   },
   "dependencies": {
     "@supabase/auth-js": "^2.118.0",
+    "@supabase/realtime-js": "2.118.0",
     "three": "^0.180.0"
   },
   "optionalDependencies": {

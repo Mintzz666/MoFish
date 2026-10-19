@@ -1,5 +1,32 @@
 # MoFish 交接
 
+## C 实施与整体优化（2026-10-20，最新入口）
+
+用户明确授权在B真机验收前继续多人C、与Luna max协作、整体自查和审美/交互升级，
+并允许向既有QA项目追加C迁移、部署独立C Worker及其回调。B尚未取得用户接受。
+当前分支 `codex/phase-c-shared-aquariums`，起点 `00426c152969ee634d7ccc3e102fc38942b4b985`；
+继续复用 `/Users/mintzz/.codex/worktrees/mofish-phase-b-acceptance/MoFish`，原Hermes工作区未覆盖。
+
+已实现定向邀请/过期/撤销，owner/editor/viewer权限，语义操作并发合并及冲突备份，
+真实Realtime版本通知与权限检查、离线队列和换号隔离；完成整体CSS/触控尺寸/共享导航及反馈打磨。
+严格回归238/238、零跳过；迁移后真实B HTTP64/64、完整C31/31；B假后端浏览器回归87/87。
+真实C双账号页面流程及最终打磨后复查均21/21，独立部署结果记录在
+[PHASE-C-ACCEPTANCE.md](PHASE-C-ACCEPTANCE.md)及对应公开证据。
+
+C迁移已应用一次：本地 `20261019155754_phase_c_shared_aquariums.sql` → 云端 `20261019161500`。
+前三份未重放；不要盲目db push。B Site URL和回调保留，C精确根地址已加白名单；
+随机账号生成的恢复链接显式C/默认B均正确，未发邮件、未输出令牌。
+本机 `.env.phase-c` 已齐，Git忽略/0600，使用Node24与既有Wrangler OAuth，无需云环境设置。
+
+明早只需按 [集中真机清单](PHASE-C-DEVICE-ACCEPTANCE.md) 反馈触控、真断网/跨设备、
+10分钟发热/前后台、音效、邮件投递/回调和最终审美。自动化不替代这些项目。
+B Worker保留冻结对照；已开C共享的账号请在C编辑，原B整缸覆盖会被服务端拒绝保护。
+A项目/Worker、Tibo、Sites、既有令牌和用户存档不改；不合并main、不打标签、不运行release。
+
+---
+
+以下为B历史交接；其中“本轮不启动C”的旧边界已被上方用户新授权更新。
+
 ## 本机阶段 B 自动化与独立部署完成，待真机验收（2026-10-19）
 
 本轮全程 Codex 本地 Project，从远端精确交接 `85211641c676b0cc7c7686d4ca583120975caf3b` 续接。

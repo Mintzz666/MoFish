@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#eef4f0"><meta name="description" content="MoFish：一方属于你的安静水世界。看鱼、布景、听水声，让心情慢下来。"><title>MoFish</title>
+<link rel="stylesheet" href="sharing.css">
 <link rel="icon" href="icon.svg" type="image/svg+xml"><link rel="manifest" href="manifest.webmanifest"><link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -11,6 +12,7 @@
     <span class="chip" id="cloud-status" data-status="guest">游客</span>
     <span class="chip quiet" id="save-status">本机存档</span>
     <button class="ghost-button" id="account-button">登录 / 注册</button>
+    <button class="ghost-button" id="sharing-button" hidden>一起养鱼</button>
     <button class="ghost-button" id="storage-button">存档</button>
   </div>
 </header>
@@ -28,7 +30,8 @@
     </div>
   </section>
 
-  <div class="aquarium-caption"><span><i aria-hidden="true"></i> 我的水下花园</span><small id="aquarium-count">小鱼与水草，正在慢慢生长</small></div>
+  <div class="collaboration-banner" id="collaboration-banner" hidden><div><b>这一方花园，有人一起照看。</b><p id="collaboration-copy"></p></div><button type="button" class="ghost-button" id="return-personal">回到个人鱼缸</button></div>
+  <div class="aquarium-caption"><span><i aria-hidden="true"></i> <span id="room-label">我的水下花园</span></span><small id="aquarium-count">小鱼与水草，正在慢慢生长</small></div>
   <section class="stage" id="aquarium" aria-label="互动鱼缸">
     <canvas id="tank" tabindex="0" aria-label="鱼缸：观赏时轻触水面喂食、点鱼查看；布景时可拖动水草、石头和沉木；按空格投食"></canvas>
     <div class="stage-top">
@@ -166,7 +169,7 @@
 
 <dialog id="species-dialog"><form method="dialog"><button class="close" aria-label="关闭">×</button></form><p class="eyebrow">A NEW FRIEND</p><h2>想请哪种小鱼回家？</h2><div class="species-grid" id="species-options"></div><div class="storage-actions"><button class="outline" id="species-random">随机来一条</button></div></dialog>
 
-<dialog id="storage-dialog"><form method="dialog"><button class="close" aria-label="关闭">×</button></form><p class="eyebrow">YOUR LITTLE WORLD</p><h2>把小鱼，好好留住。</h2><p>当前鱼缸保存在这个浏览器里，定时自动保存。清理浏览器数据前，请先导出存档。</p><div class="storage-actions"><button class="solid" id="export">导出存档</button><button class="outline" id="import">导入存档</button><input type="file" id="import-file" accept="application/json,.json" hidden></div><p class="note">登录账号后，鱼缸会自动同步到云端，在别的设备上登录同一账号即可接着养；不登录也可以继续用导出/导入在两台设备之间手动搬运。</p><details><summary>离线与安装</summary><p>支持的浏览器在首次加载完成后可离线使用，也可通过浏览器菜单“添加到主屏幕”。离线成长最多计算 24 小时，不会饿死。环境声音需要主动开启。</p></details><p id="offline-status" class="note">正在准备离线资源…</p><p class="note">导入会替换当前鱼缸，请先导出备份。旧版存档会自动升级，鱼的名字、成长和喂食记录都会保留。</p></dialog>
+<dialog id="storage-dialog"><form method="dialog"><button class="close" aria-label="关闭">×</button></form><p class="eyebrow">YOUR LITTLE WORLD</p><h2>把小鱼，好好留住。</h2><p>当前鱼缸保存在这个浏览器里，定时自动保存。清理浏览器数据前，请先导出存档。</p><div class="storage-actions"><button class="solid" id="export">导出存档</button><button class="outline" id="import">导入存档</button><input type="file" id="import-file" accept="application/json,.json" hidden></div><p class="note">登录账号后，鱼缸会自动同步到云端，在别的设备上登录同一账号即可接着养；不登录也可以继续用导出/导入在两台设备之间手动搬运。</p><details><summary>离线与安装</summary><p>支持的浏览器在首次加载完成后可离线使用，也可通过浏览器菜单“添加到主屏幕”。离线成长最多计算 24 小时，不会饿死。环境声音需要主动开启。</p></details><p id="offline-status" class="note">正在准备离线资源…</p><p class="note" id="import-note">导入会替换当前鱼缸，请先导出备份。旧版存档会自动升级，鱼的名字、成长和喂食记录都会保留。</p></dialog>
 
 <dialog id="account-dialog"><form method="dialog"><button class="close" aria-label="关闭">×</button></form><p class="eyebrow">MOFISH ACCOUNT</p><h2 id="account-title">把小鱼带到别的设备</h2><p class="dialog-lead">用邮箱注册后，鱼缸会保存在云端，换电脑或手机都能接着养。游客模式随时可用，不上传任何数据。</p><p id="cloud-off-note" class="note warn-note" hidden></p><p id="account-notice" class="notice" hidden role="status" aria-live="polite"></p>
 <section id="auth-panel">
@@ -183,7 +186,7 @@
 <div id="conflict-box" class="conflict" hidden><h3>需要你决定：保留哪一份存档</h3><pre id="conflict-summary" class="conflict-summary"></pre><div class="storage-actions"><button class="solid" id="conflict-keep-cloud">采用云端存档</button><button class="outline" id="conflict-keep-local">用本机覆盖云端</button><button class="outline" id="conflict-later">稍后决定</button></div><p class="note">两份都不会被静默删除：没有采用的那一份会留成本机备份，可以随时导出。</p></div>
 <div id="backups-box" class="backups" hidden><h3>本机备份</h3><ul id="backup-list"></ul><button class="outline" id="backup-export">导出最近一份备份</button></div>
 <p class="note">退出登录会回到本机的游客存档，云端存档不受影响。清除浏览器数据会同时删除本机缓存与游客存档。</p>
-<details><summary>隐私与安全</summary><p>鱼缸数据存放在 Supabase，由行级安全策略保证只有你自己的账号能读写；本机只保存会话令牌与缓存。未配置云端时不会发出任何网络请求。管理密钥（service_role）不会也不应出现在网页里。</p></details>
+<details><summary>隐私与安全</summary><p>鱼缸数据存放在 Supabase，由行级安全和成员权限控制访问；共享缸只向获授权伙伴开放，观看角色不能编辑；本机只保存会话令牌与缓存。未配置云端时不会发出任何网络请求。管理密钥（service_role）不会也不应出现在网页里。</p></details>
 <button type="button" class="link-button danger" id="session-forget">清除本机该账号缓存</button>
 </section>
 <section id="reset-panel" hidden><p id="reset-hint" class="note"></p><label for="reset-password">新密码</label><input id="reset-password" type="password" autocomplete="new-password" placeholder="至少 6 位"><div class="storage-actions"><button class="solid" id="reset-save">保存新密码</button><button class="outline" id="reset-later">稍后设置</button></div><p class="note">设置完新密码后会自动继续使用这个账号。</p></section>

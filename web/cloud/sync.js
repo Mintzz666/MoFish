@@ -578,7 +578,9 @@ export function createSyncEngine({
       // 界面必须能处理 cloudKnown=false，不能假定一定有两份可比较的存档。
       cloudKnown: Boolean(conflict.cloudState),
       localFish: fishSummary(conflict.localState),
-      cloudFish: fishSummary(conflict.cloudState)
+      cloudFish: fishSummary(conflict.cloudState),
+      localDecor: conflict.localState?.decor || [],
+      cloudDecor: conflict.cloudState?.decor || []
     };
   }
 

@@ -4,19 +4,17 @@
 
 本文件是开发顺序和验收依据；各阶段状态以下方实际记录为准。版本号是建议目标，阶段验收和正式发布分开处理。
 
-## 当前进度（2026-10-18）
+## 当前进度（2026-10-20）
 
-**阶段 A 已验收收口**：用户完成密码重置、离线重连、双设备冲突与备份、退出换号隔离四组实测，结合既有真实云端验证确认完成。证据见 [PHASE-A-ACCEPTANCE.md](PHASE-A-ACCEPTANCE.md)。
+阶段 A 已验收，见 [PHASE-A-ACCEPTANCE.md](PHASE-A-ACCEPTANCE.md)。B 已通过本机严格测试、真实 HTTP 与独立 Worker 部署，真机、听感及用户审美接受仍待完成，见 [PHASE-B-LOCAL-ACCEPTANCE.md](PHASE-B-LOCAL-ACCEPTANCE.md)。
 
-**阶段 B 已实现，等待 Codex 复核与用户验收**（分支 `hermes/single-player-3d`）：3D 主视图 + 2D 降级、
-9 鱼型 / 6 水草 / 5 石 / 2 沉木、四阶段成长（自然 14 天、正常喂食 10 天）、可持久造景编辑、进食记账去重。
-证据见 [POST-A-ACCEPTANCE.md](POST-A-ACCEPTANCE.md)；未合并 main、未打标签、未部署、未应用云端迁移。
+用户于 2026-10-19 明确调整门槛：不等待 B 真机验收，授权 Codex 与 Luna max 实施多人 C、整体自查和审美/交互升级。C 使用同一独立 QA Supabase 和另一个测试 Worker；这不等于 B/C 版本接受。当前实施及证据入口为 [PHASE-C-PROGRESS.md](PHASE-C-PROGRESS.md)、[PHASE-C-ACCEPTANCE.md](PHASE-C-ACCEPTANCE.md)，集中人工步骤见 [PHASE-C-DEVICE-ACCEPTANCE.md](PHASE-C-DEVICE-ACCEPTANCE.md)。不合并 main、不打标签、不运行 release。
 
-## 后续顺序（2026-10-18 用户调整）
+## 顺序沿革（2026-10-18/19 用户调整）
 
 用户决定先完善单人，再考虑多人。新 B 合并原 C/D 的页面、3D、运动、水体与造景；新 C 承接原 B 的多人共享。
-[Hermes 长程任务书](HERMES-POST-A-LONG-RUN-PROMPT.md)已更新，本轮只交付 B，完成后由 Codex 复核、用户验收，再决定是否启动 C。
-之前“多人优先、一次连续实现两阶段”的方案已被本次顺序替代；需求保留，实施尚未开始，正式发布未授权。
+[Hermes 长程任务书](HERMES-POST-A-LONG-RUN-PROMPT.md)限定 Hermes 交付 B。用户于19日另行授权 Codex 与 Luna 直接推进 C，B 真机验收另列未完成。
+C 已按最新授权实施；正式发布仍未授权。
 
 ## 推荐架构
 
@@ -86,7 +84,7 @@ A 的必须验证项：
 - 每条鱼独立经历鱼苗/幼鱼/亚成年/成年四阶段，时间与实际吃到的食物共同贡献成长，体型/比例渐进变化；默认约 14 天自然成年、正常喂食约 10 天（规则可调，保留 24h 离线结算上限）。营养收益设上限、服务端记账去重，旧鱼不重置、不倒退，不新增饿死或强制签到。
 - 现有 4 种 species 索引与 plants 数量字段须明确兼容迁移，旧鱼身份/成长不丢失，A 的同步/冲突/备份能力保留。
 
-## C：共享鱼缸（原 B，后续再启动）
+## C：共享鱼缸（原 B，已获授权启动）
 
 - 用成员关系授权：owner / editor / viewer。邀请必须定向、可撤销、有有效期；未登录先完成邮箱登录。
 - 喂食等操作用唯一 operation_id，数据库事务内去重并更新 revision；不同成员并发修改不能靠整缸快照覆盖。

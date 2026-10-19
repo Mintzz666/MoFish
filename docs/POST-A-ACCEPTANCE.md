@@ -1,4 +1,15 @@
-# 阶段 B 验收记录（单人完整体验）
+# 阶段 B / C 验收记录
+
+## 最新任务边界（2026-10-20）
+
+用户已明确授权在 B 真机验收前推进 C、整体自查及审美/交互优化，并部署独立 C 测试入口。
+当前开发分支 `codex/phase-c-shared-aquariums`；B 部署保留。最新实施和证据以
+[PHASE-C-ACCEPTANCE.md](PHASE-C-ACCEPTANCE.md) 为准，明早统一按
+[集中真机步骤](PHASE-C-DEVICE-ACCEPTANCE.md) 验收。B/C 均未取得最终用户接受，不合并、不打标签、不正式 release。
+
+以下为 B 历史验收记录，原“本轮只做 B/不做 C”边界已被上述用户授权更新。
+
+## 阶段 B（单人完整体验）
 
 - 当前分支：`codex/phase-b-review-polish`；实际部署源码 `a7706e620d89cbd8a3530e9f2fb4492eb58afffd`。
 - Hermes 原始实现基线：`38870f194b7e423240a03b803303cd636a891543`。

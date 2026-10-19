@@ -24,7 +24,8 @@ create schema if not exists auth;
 
 create table if not exists auth.users (
   id    uuid primary key,
-  email text unique
+  email text unique,
+  email_confirmed_at timestamptz default now()
 );
 
 -- 与 Supabase 语义一致：从会话 JWT claims 的 sub 取当前用户 id，未登录返回 null。

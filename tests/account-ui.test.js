@@ -200,6 +200,83 @@ test('sync notice follows synced, offline, then conflict snapshots', () => {
   assert.match(h.el('account-notice').textContent, /各有改动/);
 });
 
+test('shared conflict summary reports decor count and added, removed, and changed objects', () => {
+  const h = makeHarness();
+  h.snapshot.isShared = true;
+  h.snapshot.role = 'owner';
+  h.snapshot.conflict = { reason: 'pending' };
+  h.engine.conflictDetail = () => ({
+    reason: 'pending',
+    cloudKnown: true,
+    localFish: [{ name: '小鱼', growth: 0.4, meals: 3 }],
+    cloudFish: [{ name: '小鱼', growth: 0.4, meals: 3 }],
+    localDecor: [{ id: 'plant-1', kind: 'plant', x: 0.2, seed: 10 }],
+    cloudDecor: [
+      { id: 'plant-1', kind: 'plant', x: 0.8, seed: 10 },
+      { id: 'rock-1', kind: 'rock', x: 0.6, seed: 20 }
+    ]
+  });
+  h.ui.render();
+
+  const summary = h.el('conflict-summary').textContent;
+  assert.match(summary, /本机造景：1 件（比云端新增 0 件、移走 1 件，另有 1 件位置或造型变动）/);
+  assert.match(summary, /云端造景：2 件（比本机新增 1 件、移走 0 件，另有 1 件位置或造型变动）/);
+  assert.equal(h.el('conflict-keep-local').textContent, '保留我的这项改动');
+  assert.equal(h.el('conflict-keep-local').disabled, false);
+});
+
+test('decor comparison ignores key order but detects a position change at equal counts', () => {
+  const h = makeHarness();
+  h.snapshot.conflict = { reason: 'pending' };
+  const localDecor = [{ id: 'plant-1', kind: 'plant', position: { x: 0.2, z: 0.4 } }];
+  let cloudDecor = [{ position: { z: 0.4, x: 0.2 }, kind: 'plant', id: 'plant-1' }];
+  h.engine.conflictDetail = () => ({ reason: 'pending', cloudKnown: true, localFish: [], cloudFish: [], localDecor, cloudDecor });
+  h.ui.render();
+  assert.match(h.el('conflict-summary').textContent, /本机和云端都有 1 件造景，物件内容相同/);
+
+  cloudDecor = [{ position: { z: 0.4, x: 0.7 }, kind: 'plant', id: 'plant-1' }];
+  h.ui.render();
+  assert.match(h.el('conflict-summary').textContent, /另有 1 件位置或造型变动/);
+  assert.match(h.el('conflict-summary').textContent, /本机造景：1 件/);
+  assert.match(h.el('conflict-summary').textContent, /云端造景：1 件/);
+});
+
+test('shared viewer cannot choose the local copy and gets backup guidance', async () => {
+  const h = makeHarness();
+  let resolveCalls = 0;
+  h.snapshot.isShared = true;
+  h.snapshot.role = 'viewer';
+  h.snapshot.conflict = { reason: 'pending' };
+  h.engine.conflictDetail = () => ({
+    reason: 'pending', cloudKnown: true,
+    localFish: [], cloudFish: [], localDecor: [], cloudDecor: []
+  });
+  h.engine.resolveConflict = async () => { resolveCalls += 1; return { ok: true }; };
+  h.ui.render();
+
+  const local = h.el('conflict-keep-local');
+  assert.equal(local.textContent, '保留我的这项改动');
+  assert.equal(local.disabled, true);
+  assert.equal(h.el('conflict-keep-cloud').disabled, false);
+  assert.match(h.el('conflict-summary').textContent, /只有观看权限/);
+  assert.match(h.el('conflict-summary').textContent, /导出本机备份/);
+
+  await local.listeners.get('click')[0]({ target: local });
+  assert.equal(resolveCalls, 0, 'the handler guard must reject a local choice even if called directly');
+  assert.match(h.el('account-notice').textContent, /只有观看权限/);
+});
+
+test('older conflict details without decor fields still render', () => {
+  const h = makeHarness();
+  h.snapshot.conflict = { reason: 'pending' };
+  h.ui.render();
+
+  assert.match(h.el('conflict-summary').textContent, /本机：/);
+  assert.match(h.el('conflict-summary').textContent, /云端：/);
+  assert.doesNotMatch(h.el('conflict-summary').textContent, /造景/);
+  assert.equal(h.el('conflict-keep-local').textContent, '用本机覆盖云端');
+});
+
 test('conflict choices are disabled while an asynchronous choice is running', async () => {
   const gate = deferred();
   let calls = 0;

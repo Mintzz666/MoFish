@@ -1,3 +1,9 @@
+# 最新续接入口（2026-10-20）
+
+用户随后明确授权直接继续多人 C、整体优化、自查及独立 C 入口部署。请先读
+[PHASE-C-PROGRESS.md](PHASE-C-PROGRESS.md)、[PHASE-C-ACCEPTANCE.md](PHASE-C-ACCEPTANCE.md) 与 HANDOFF 顶部。
+下文 B 迁移映射及冻结部署仍有效，“不启动 C”属于旧轮范围，不覆盖最新授权。
+
 # MoFish 阶段 B：新对话续接
 
 ## 已授权范围

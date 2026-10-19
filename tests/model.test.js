@@ -264,3 +264,11 @@ test('随机数工具确定可复现', () => {
   for (let i = 0; i < 5; i += 1) assert.equal(a(), b());
   assert.notEqual(hashSeed('a'), hashSeed('b'));
 });
+
+test('normalizing an in-range decor rotation preserves its exact cloud value across reads', () => {
+  const original = initial();
+  original.decor[0].rot = 0.1;
+  let restored = original;
+  for (let i = 0; i < 10; i++) restored = validate(restored);
+  assert.equal(restored.decor[0].rot, 0.1);
+});

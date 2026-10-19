@@ -19,6 +19,44 @@ const STATUS_SHORT = {
   [STATUS.SIGNED_OUT]: '登录已失效'
 };
 
+function stableJson(value) {
+  function ordered(item) {
+    if (Array.isArray(item)) return item.map(ordered);
+    if (item && typeof item === 'object') {
+      const result = Object.create(null);
+      for (const key of Object.keys(item).sort()) result[key] = ordered(item[key]);
+      return result;
+    }
+    return item;
+  }
+  try { return JSON.stringify(ordered(value)); }
+  catch { return String(value); }
+}
+
+function decorMap(items) {
+  const result = new Map();
+  items.forEach((item, index) => {
+    const id = item && (typeof item.id === 'string' || typeof item.id === 'number')
+      ? `id:${item.id}`
+      : `index:${index}`;
+    result.set(id, stableJson(item));
+  });
+  return result;
+}
+
+function decorDifference(localDecor, cloudDecor) {
+  const local = decorMap(localDecor);
+  const cloud = decorMap(cloudDecor);
+  const localOnly = [...local.keys()].filter(id => !cloud.has(id)).length;
+  const cloudOnly = [...cloud.keys()].filter(id => !local.has(id)).length;
+  const changed = [...local.keys()].filter(id => cloud.has(id) && local.get(id) !== cloud.get(id)).length;
+  return { localOnly, cloudOnly, changed };
+}
+
+function isSharedViewer(snapshot) {
+  return Boolean(snapshot?.isShared && snapshot.role === 'viewer');
+}
+
 export function createAccountUI({ auth, engine, store, config, onSessionChange = () => {} , doc = document }) {
   const $ = (id) => doc.getElementById(id);
   const cloudReady = config?.mode === 'ready';
@@ -138,17 +176,35 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
     if (!els.conflictBox) return;
     els.conflictBox.hidden = !detail;
     if (!detail) return;
+    const snap = engine.snapshot;
+    const viewerShared = isSharedViewer(snap);
+    if (els.conflictKeepLocal) {
+      els.conflictKeepLocal.textContent = snap.isShared ? '保留我的这项改动' : '用本机覆盖云端';
+      els.conflictKeepLocal.disabled = conflictBusy || viewerShared;
+    }
     const lines = [
       detail.reason === 'guest_import'
         ? '这台设备上有一份旧的本地鱼缸，云端账号里也有一份存档。'
         : detail.reason === 'pending'
           ? '本机有还没同步的修改，云端也有新内容。'
-          : '云端存档已被其它设备改过（revision 不一致）。',
-      `本机：${detail.localFish.map(f => `${f.name}(${Math.round(f.growth * 100)}%, ${f.meals}口)`).join('、') || '（无）'}`,
+          : '云端存档已被其它设备改过。',
+      `本机：${(detail.localFish || []).map(f => `${f.name}(${Math.round(f.growth * 100)}%, ${f.meals}口)`).join('、') || '（无）'}`,
       detail.cloudKnown
-        ? `云端：${detail.cloudFish.map(f => `${f.name}(${Math.round(f.growth * 100)}%, ${f.meals}口)`).join('、') || '（无）'}`
+        ? `云端：${(detail.cloudFish || []).map(f => `${f.name}(${Math.round(f.growth * 100)}%, ${f.meals}口)`).join('、') || '（无）'}`
         : '云端：内容尚未读取，选择任意一项时都会先取回云端最新版本。'
     ];
+    if (detail.cloudKnown && Array.isArray(detail.localDecor) && Array.isArray(detail.cloudDecor)) {
+      const diff = decorDifference(detail.localDecor, detail.cloudDecor);
+      if (!diff.localOnly && !diff.cloudOnly && !diff.changed) {
+        lines.push(`本机和云端都有 ${detail.localDecor.length} 件造景，物件内容相同。`);
+      } else {
+        lines.push(`本机造景：${detail.localDecor.length} 件（比云端新增 ${diff.localOnly} 件、移走 ${diff.cloudOnly} 件，另有 ${diff.changed} 件位置或造型变动）。`);
+        lines.push(`云端造景：${detail.cloudDecor.length} 件（比本机新增 ${diff.cloudOnly} 件、移走 ${diff.localOnly} 件，另有 ${diff.changed} 件位置或造型变动）。`);
+      }
+    }
+    if (viewerShared) {
+      lines.push('你目前只有观看权限，不能保留本机改动。若要采用云端存档，请先导出本机备份，再选择“采用云端存档”。');
+    }
     els.conflictSummary.textContent = lines.join('\n');
   }
 
@@ -217,7 +273,7 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
         els.syncNow.setAttribute('aria-busy', String(busy));
       }
       for (const el of [els.conflictKeepCloud, els.conflictKeepLocal, els.conflictLater]) {
-        if (el) el.disabled = conflictBusy;
+        if (el) el.disabled = conflictBusy || (el === els.conflictKeepLocal && isSharedViewer(snap));
       }
       renderSyncNotice();
     }
@@ -369,6 +425,11 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
 
   async function doConflict(choice) {
     if (conflictBusy || syncBusy) return;
+    if (choice === 'local' && isSharedViewer(engine.snapshot)) {
+      setNotice('你目前只有观看权限，不能保留本机改动。若要采用云端存档，请先导出本机备份，再选择“采用云端存档”。', 'warn');
+      render();
+      return;
+    }
     const token = opToken;
     const gen = engine.generation;
     conflictBusy = true;
