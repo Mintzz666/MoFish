@@ -1,69 +1,64 @@
-# 用户配置：阶段 B 新项目与云环境
+# 阶段 B 本机配置（2026-10-19）
 
-只配置新项目 `MoFish-Phase-B-QA`（`gbcfyqtbezkgkstrfbzn`），不要改旧 A 项目。
-项目已经创建、三份迁移已应用，真实云 SQL 31/31 通过；不需要重复建项目或运行 SQL。
-B 测试站尚未部署，以下网址是后续部署目标。
+本轮使用 Codex 本地 Project，不使用 Codex Cloud。不需要云环境网络白名单、秘密注入或代理占位配置。
+仅操作 `MoFish-Phase-B-QA`（`gbcfyqtbezkgkstrfbzn`）；三份迁移已应用，不重复建项目、`db push` 或重放迁移。
 
-## 1. 找到新项目的管理测试密钥
+## 本机文件
 
-1. 打开 [新项目 API Keys](https://supabase.com/dashboard/project/gbcfyqtbezkgkstrfbzn/settings/api-keys)。
-2. 核对项目名称 `MoFish-Phase-B-QA`，ref `gbcfyqtbezkgkstrfbzn`。
-3. 在 `Legacy API Keys` / `Legacy anon, service_role API keys` 区域找到 `service_role`，显示并复制它。
-   不选择 `anon` 或 `publishable`，也不要把 `sb_secret_...` 填进当前只支持 Legacy 的测试脚本。
-4. 密钥只粘贴到下面的云环境秘密设置，不发聊天、不放仓库、不放网页配置。
-   如果界面只有新 `secret` 类型、没有 Legacy，停止复制并告诉 Codex 你看到的字段名称，不发值。
+当前验收工作树：`/Users/mintzz/.codex/worktrees/mofish-phase-b-acceptance/MoFish`。
+配置文件为该目录的 `.env.phase-b`，Git 忽略、权限 `0600`；不要复制到源码或聊天。
+原 `/Users/mintzz/Documents/MoFish` 仍保留 Hermes 分支，未切换或覆盖。
 
-## 2. 云环境网络配置
+公开 URL/ref/publishable key 已通过已连接 B 项目取回，不需要手抄。
+`MOFISH_B_SMOKE_SERVICE_ROLE_KEY` 使用新 B 项目的真实 Legacy service_role，不能复用 A 或云代理占位值。
+在 [B API Keys](https://supabase.com/dashboard/project/gbcfyqtbezkgkstrfbzn/settings/api-keys)
+的 **Legacy anon, service_role API keys** 标签找到 `service_role`，Reveal 后仅粘贴到本机配置。
+当前脚本显式拒绝 `sb_secret_...`。环境变量优先于文件；若修改文件后结果不符，检查是否有旧导出变量覆盖。
 
-打开当前云环境的配置/编辑页面，找到网络允许域名列表，在原有列表上追加：
-
-```text
-gbcfyqtbezkgkstrfbzn.supabase.co
-mofish-phase-b.tibo-reset-notifier.workers.dev
+```dotenv
+MOFISH_B_PROJECT_REF=gbcfyqtbezkgkstrfbzn
+MOFISH_B_SUPABASE_URL=https://gbcfyqtbezkgkstrfbzn.supabase.co
+MOFISH_B_SUPABASE_ANON_KEY=<已恢复的新 B 公开 key>
+MOFISH_B_SMOKE_SERVICE_ROLE_KEY=<仅本机保存的新 B Legacy service_role>
+CLOUDFLARE_ACCOUNT_ID=c718d031b16fe6edfe870bfe3551ab6b
 ```
 
-保持现有网络模式、代理和原域名；域名字段不加 `https://`、路径或通配符。
-不要删除旧 A 项目的域名、Cloudflare API 域名或依赖下载配置。
+## Node 与网络
 
-## 3. 云环境新增秘密
+本机已有 Node `24.19.0`，可在任务终端设置：
 
-在 `Secrets` / 秘密配置中新增一项：
-
-| 字段 | 填写 |
-| --- | --- |
-| 名称 / 环境变量名 | `MOFISH_B_SMOKE_SERVICE_ROLE_KEY` |
-| 值 | 第 1 步复制的新 B 项目 Legacy `service_role`，只在秘密输入框粘贴 |
-| 允许注入的目标域名 | `gbcfyqtbezkgkstrfbzn.supabase.co` |
-
-如果名称和环境变量名是两个输入框，两者都填上面的变量名。使用环境变量注入方式；不把值放普通公开变量。
-原 `MOFISH_SMOKE_SERVICE_ROLE_KEY`、`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID` 保留不变。
-公开的 B URL/ref/publishable 配置可由 Codex 重新取回，无需手抄公开 key。
-
-## 4. 新 B 项目的邮件回调
-
-打开 [新项目 Auth URL Configuration](https://supabase.com/dashboard/project/gbcfyqtbezkgkstrfbzn/auth/url-configuration)：
-
-- Site URL 改为 `https://mofish-phase-b.tibo-reset-notifier.workers.dev/`。
-- Redirect URLs 新增同一个完整地址，包含末尾 `/`。
-- 保存。不要把旧 A 的 Auth URL 改到这里；Site URL 不应仍为 `http://localhost:3000`。
-
-这能避免验证/重置邮件误跳 localhost。测试站尚未部署，现在直接打开目标网址不可用属正常。
-
-## 5. 保存并在新对话继续
-
-保存并应用云环境配置；如提示需要启动/重建环境，按界面操作等待就绪。
-新对话必须选择/连接刚保存的这份云环境配置，不能默认旧环境已经继承新增秘密和域名。
-不要把整个变量页、密钥值或完整验证邮件链接粘贴到聊天里。
-
-然后发送：
-
-```text
-继续 Mintzz666/MoFish 阶段 B 验收。我已按说明保存 B 云环境配置。
-请获取 codex/phase-b-review-polish 最新远端，保留本地改动，先读 AGENTS.md、docs/HANDOFF.md、docs/PHASE-B-NEXT-CHAT.md，再按里面的已授权范围继续。
-独立 B 项目 gbcfyqtbezkgkstrfbzn 已创建、三份迁移已应用、真实 SQL 31/31 通过，不要重复建项目或重放迁移。
-先安全核验网络与 MOFISH_B_SMOKE_SERVICE_ROLE_KEY 注入，不输出凭据；缺公开配置可从新 B 项目取回。代理占位符不能仅因无法解析 JWT 就判缺失。
-沿用代理运行 NODE_USE_ENV_PROXY=1 npm run test:cloud:b，通过后只部署独立 mofish-phase-b Worker，并给我真机验收步骤。
-保持 A 项目/入口、Tibo、旧 Sites 和令牌不变；不合并 main、不打标签、不运行 release。清理自己创建的临时账号和进程。
+```sh
+export PATH=/Users/mintzz/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH
+cd /Users/mintzz/.codex/worktrees/mofish-phase-b-acceptance/MoFish
+node --version
+npm run test:cloud:b
 ```
 
-B 是独立测试环境，A 的账号和存档不会自动迁入；后续测试只使用本轮创建的临时身份或明确的 B 测试账号。
+本轮直接连接 B API 可达，HTTP 冒烟使用普通命令；只有本机实际需要且已配置代理时才加 `NODE_USE_ENV_PROXY=1`。
+保留现有代理及 TLS 校验，不修改系统代理或云环境。
+
+## Cloudflare
+
+本机 `wrangler@4.151.0 whoami` 已验证现有 OAuth 登录及目标账号，无需新建或复制令牌。
+B 部署脚本支持现有 Wrangler OAuth，仍要求明确账号 ID；A 部署入口的凭据要求不变。
+未来登录失效时，先在本机运行 `npx wrangler@4.151.0 login` 完成官方浏览器登录，再 `whoami` 核对账号。
+也可安全配置已授权的 `CLOUDFLARE_API_TOKEN`；不要替换或撤销已有其他项目令牌。
+
+HTTP 通过后，提交已审阅变更，在干净工作区执行：
+
+```sh
+npm run deploy:cloudflare:b -- --dry-run
+npm run deploy:cloudflare:b
+```
+
+Worker 固定 `mofish-phase-b`；不操作原 `mofish`。B 产物 `/deployment.json` 和 Cloudflare 版本说明记录源码 SHA。
+预演不等于部署成功；线上验证结果以验收文档为准。
+
+## B Auth 回调
+
+在 [B Auth URL Configuration](https://supabase.com/dashboard/project/gbcfyqtbezkgkstrfbzn/auth/url-configuration)
+核对 Site URL 与 Redirect URLs 均包含 `https://mofish-phase-b.tibo-reset-notifier.workers.dev/`。
+不能仍默认跳转 `localhost`。只修改 B；不改变 A 的回调。实际核验结果见交接和验收记录。
+
+B 是独立测试环境，A 账号和存档不会自动迁入。自动化仅使用脚本随机临时身份，完成后清理；
+新 B 项目和供用户验收的 Worker 保留。多人 C、main 合并、版本标签和正式 release 均不在本轮范围。

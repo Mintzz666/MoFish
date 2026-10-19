@@ -1,6 +1,8 @@
 // Deploy only this checkout's MoFish worker. Credentials stay in the process environment.
 import { loadEnvFile } from 'node:process';
 import { spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+import { writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { readCloudConfig } from '../web/cloud/config.js';
 import { checkPhaseBTarget, phaseBEnvironment } from './phase-b-cloud-checks.mjs';
@@ -27,7 +29,9 @@ if (phaseB) {
 if (config.mode !== 'ready') missing.push(phaseB
   ? 'MOFISH_B_SUPABASE_URL / MOFISH_B_SUPABASE_ANON_KEY（有效公开配置）'
   : 'MOFISH_SUPABASE_URL / MOFISH_SUPABASE_ANON_KEY（有效公开配置）');
-if (!dryRun && !process.env.CLOUDFLARE_API_TOKEN?.trim()) missing.push('CLOUDFLARE_API_TOKEN');
+// Local B deployments may reuse Wrangler's existing OAuth login. Never copy its
+// stored token into an environment file or require a second persistent API token.
+if (!phaseB && !dryRun && !process.env.CLOUDFLARE_API_TOKEN?.trim()) missing.push('CLOUDFLARE_API_TOKEN');
 if (!dryRun && !process.env.CLOUDFLARE_ACCOUNT_ID?.trim()) missing.push('CLOUDFLARE_ACCOUNT_ID');
 if (missing.length) {
   console.error(`尚不能部署：请在环境变量或本机 ${phaseB ? '.env.phase-b' : '.env'} 配置 ${missing.join('、')}。`);
@@ -49,9 +53,17 @@ if (missing.length) {
     });
   }
   try {
+    const sourceSha = phaseB ? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim() : null;
+    if (phaseB && !dryRun && execFileSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf8' }).trim()) {
+      throw new Error('B 部署要求干净的已提交工作区，以便精确核验源码 SHA。');
+    }
     await run(process.execPath, ['build.mjs']);
+    if (phaseB) await writeFile(new URL('../dist/deployment.json', import.meta.url), JSON.stringify({
+      phase: 'b', worker: workerName, sourceSha, projectRef: sourceEnv.MOFISH_SMOKE_EXPECTED_PROJECT_REF
+    }, null, 2) + '\n');
     await run(process.platform === 'win32' ? 'npx.cmd' : 'npx', [
       '--yes', 'wrangler@4.151.0', 'deploy', '--config', 'wrangler.toml', '--name', workerName,
+      ...(phaseB ? ['--message', `MoFish Phase B source=${sourceSha}`] : []),
       ...(dryRun ? ['--dry-run'] : [])
     ]);
   } catch (error) {
