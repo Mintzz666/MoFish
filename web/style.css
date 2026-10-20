@@ -586,6 +586,33 @@ details summary { cursor: pointer; }
   .tool.primary small { margin-left: auto; }
   .decor-float .chip-button { min-height: 36px; }
   .aquarium-caption small { font-size: 0.64rem; }
+  /* 给画面和编辑工具各自留空间，避免工具条盖住正在摆放的矮造景。 */
+  .stage[data-mode="decor"]:has(.decor-float:not([hidden])) {
+    display: flex;
+    flex-direction: column;
+    aspect-ratio: auto;
+    max-height: none;
+  }
+  .stage[data-mode="decor"]:has(.decor-float:not([hidden])) #tank {
+    position: relative;
+    inset: auto;
+    flex: none;
+    height: clamp(320px, 48vh, 420px);
+  }
+  .stage[data-mode="decor"]:has(.decor-float:not([hidden])) .decor-float {
+    position: relative;
+    left: auto;
+    bottom: auto;
+    transform: none;
+    flex: none;
+    align-self: center;
+    margin: 0.2rem 0 0.75rem;
+  }
+  .stage[data-mode="decor"]:fullscreen:has(.decor-float:not([hidden])) #tank {
+    flex: 1;
+    min-height: 240px;
+    height: auto;
+  }
 }
 @media (max-width: 640px) {
   .decor-float { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); width: calc(100% - 1.2rem); gap: 0.3rem; border-radius: 14px; }

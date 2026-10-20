@@ -580,6 +580,10 @@ async function main() {
   await devicePhaseB.click('#add-rock');
   const decorAfter = await devicePhaseB.evaluate('window.__mofish.state.decor.length');
   check('新增造景进入场景并等待确认', decorAfter === decorBefore + 1 && (await devicePhaseB.evaluate('!document.getElementById("decor-pending-actions").hidden')));
+  check('新造景立即高亮且只指向当前物件', await devicePhaseB.evaluate(`(()=>{const f=window.__mofish.selectionFeedback;return f.visible && f.id===window.__mofish.state.decor.at(-1).id && f.intensity>0.5;})()`));
+  check('造景实际几何底部贴合起伏沙面', await devicePhaseB.evaluate(`(()=>{const f=window.__mofish.selectionFeedback;return Math.abs(f.bottomY-f.sandY)<1e-6;})()`));
+  await devicePhaseB.evaluate(`window.scrollTo(0,0);new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+  await devicePhaseB.shot('09-selected-rock-desktop.png');
   const rotBefore = await devicePhaseB.evaluate('window.__mofish.state.decor[0]?.rot');
   await devicePhaseB.click('#decor-rotate');
   const rotAfter = await devicePhaseB.evaluate('window.__mofish.state.decor[0]?.rot');
@@ -588,6 +592,7 @@ async function main() {
   await devicePhaseB.click('#decor-reshuffle');
   const seedAfter = await devicePhaseB.evaluate('window.__mofish.state.decor[0]?.seed');
   check('换个造型只改 seed', seedBefore !== seedAfter);
+  check('换造型重建后仍高亮当前物件', await devicePhaseB.evaluate(`window.__mofish.selectionFeedback.visible && window.__mofish.selectionFeedback.id === window.__mofish.selectedDecor && window.__mofish.selectionFeedback.intensity > 0.5`));
   await devicePhaseB.click('#decor-confirm');
   // 撤销一次回到「换造型」之前（seed 恢复），再撤销一次回到「旋转」之前（角度恢复）
   await devicePhaseB.click('#decor-undo');
@@ -612,6 +617,7 @@ async function main() {
   check('浮动条“取消”移除待确认物件', floatAfterCancel === floatCount,
     `取消前=${floatCount + 1}，取消后=${floatAfterCancel}`);
   check('取消后待确认按钮不再残留', await devicePhaseB.evaluate('document.getElementById("float-cancel").hidden === true'));
+  check('取消新物件后清除高亮', await devicePhaseB.evaluate(`!window.__mofish.selectionFeedback.visible && window.__mofish.selectionFeedback.id === null`));
 
   await devicePhaseB.click('#add-rock');
   await devicePhaseB.click('#float-confirm');
@@ -628,6 +634,20 @@ async function main() {
   await devicePhaseB.click('#float-confirm');
   check('完成布景收起工具条、取消选中并回到观赏', await devicePhaseB.evaluate(`window.__mofish.editMode === 'view' && window.__mofish.selectedDecor === null && document.getElementById('decor-float').hidden`));
   check('完成布景保留刚才的造景调整', (await devicePhaseB.evaluate('JSON.stringify(window.__mofish.state.decor)')) === beforeFinish);
+  check('完成布景后恢复正常外观并隐藏定位圈', await devicePhaseB.evaluate(`!window.__mofish.selectionFeedback.visible && window.__mofish.selectionFeedback.id === null`));
+
+  // 高水草与手机窄屏的实际渲染截图；仍属桌面浏览器仿真，不能当真机验收。
+  await devicePhaseB.click('#add-plant');
+  await devicePhaseB.evaluate(`window.scrollTo(0,0);new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+  await devicePhaseB.shot('10-selected-plant-desktop.png');
+  await devicePhaseB.setViewport(390, 844);
+  await devicePhaseB.evaluate(`window.scrollTo(0,0);new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+  await sleep(350);
+  await devicePhaseB.shot('11-selected-plant-mobile.png');
+  check('窄屏新增水草仍保持当前物件高亮', await devicePhaseB.evaluate(`window.__mofish.selectionFeedback.visible && window.__mofish.selectionFeedback.id === window.__mofish.state.decor.at(-1).id`));
+  check('窄屏工具条位于画面下方，不遮住当前造景', await devicePhaseB.evaluate(`document.getElementById('decor-float').getBoundingClientRect().top >= document.getElementById('tank').getBoundingClientRect().bottom`));
+  await devicePhaseB.click('#float-cancel');
+  await devicePhaseB.setViewport(1440, 900, false);
 
   // 2D 降级与画质
   await devicePhaseB.click('#toggle-2d');

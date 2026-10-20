@@ -5,7 +5,7 @@
 // - 每帧只更新 uniform / transform，不重建几何；只有阶段变化或换 seed 才重建单个对象。
 // - 所有 GPU 资源都能通过 dispose() 释放，供画质切换、2D 降级和页面卸载时使用。
 import * as THREE from 'three';
-import { TANK, QUALITY, createTankScene } from './scene.js';
+import { TANK, QUALITY, createTankScene, sandHeightAt } from './scene.js';
 import { createFishMesh, disposeFish } from './fish.js';
 import { createDecorMesh, disposeDecor } from './decor.js';
 import { FISH_TYPE_BY_ID, DECOR_KINDS } from '../catalog.js';
@@ -49,6 +49,7 @@ export function createView3D({
   const clock = { last: 0, time: 0 };
   let selection = null;         // 选中的造景 id
   let selectionRing = null;
+  let highlightedNode = null;
   let mode = 'view';            // 'view' | 'decor'
   let foodMesh = null;
   let foodDummy = new THREE.Object3D();
@@ -79,12 +80,18 @@ export function createView3D({
     scene3d.tankGroup.add(foodMesh);
 
     selectionRing = new THREE.Mesh(
-      new THREE.RingGeometry(0.16, 0.2, 40),
-      new THREE.MeshBasicMaterial({ color: '#f6f2d8', transparent: true, opacity: 0.72, side: THREE.DoubleSide, depthWrite: false })
+      new THREE.RingGeometry(0.17, 0.2, 48),
+      new THREE.MeshBasicMaterial({ color: '#ffdc78', transparent: true, opacity: 0.95, side: THREE.DoubleSide, depthWrite: false, depthTest: false, toneMapped: false })
     );
     selectionRing.rotation.x = -Math.PI / 2;
     selectionRing.visible = false;
-    selectionRing.renderOrder = 5;
+    selectionRing.renderOrder = 11;
+    const rim = new THREE.Mesh(
+      new THREE.RingGeometry(0.158, 0.212, 48),
+      new THREE.MeshBasicMaterial({ color: '#36594e', side: THREE.DoubleSide, depthWrite: false, depthTest: false, toneMapped: false })
+    );
+    rim.renderOrder = 10;
+    selectionRing.add(rim);
     scene3d.tankGroup.add(selectionRing);
 
     start();
@@ -232,6 +239,10 @@ export function createView3D({
     node.group.rotation.y = Math.PI * 2 - item.rot;
     const appearance = node.group.userData.appearance;
     node.group.scale.setScalar(item.scale * (appearance?.scaleJitter ?? 1));
+    const geometry = node.group.userData.geometry;
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    // 沙面有起伏；让实际几何底部贴合当地沙面，避免矮石头被整个埋住。
+    node.group.position.y = sandHeightAt(world.x, world.z) - geometry.boundingBox.min.y * node.group.scale.y;
   }
 
   // ---------------------------------------------------------------- 选中
@@ -243,14 +254,33 @@ export function createView3D({
   function updateSelectionRing() {
     if (!selectionRing) return;
     const node = selection ? decorNodes.get(selection) : null;
+    // 选中效果只留在视图材料中，不写入外观 seed 或云端存档。
+    // 换造型/画质会重建 node，因此也要恢复旧材料并高亮新材料。
+    if (highlightedNode !== node) {
+      if (highlightedNode) {
+        const material = highlightedNode.group.userData.material;
+        material.emissive.copy(highlightedNode.selectionEmissive);
+        material.emissiveIntensity = highlightedNode.selectionIntensity;
+      }
+      highlightedNode = node;
+      if (node) {
+        const material = node.group.userData.material;
+        node.selectionEmissive = material.emissive.clone();
+        node.selectionIntensity = material.emissiveIntensity;
+        material.emissive.set('#ffcf63');
+        material.emissiveIntensity = 0.65;
+      }
+    }
     if (!node) {
       selectionRing.visible = false;
       return;
     }
-    const appearance = node.group.userData.appearance;
-    const radius = appearance?.kind === 'plant' ? 0.2 : appearance?.kind === 'rock' ? (appearance.params.size || 0.25) * 1.15 : 0.26;
-    selectionRing.scale.setScalar(Math.max(0.7, radius / 0.18));
-    selectionRing.position.set(node.group.position.x, 0.02, node.group.position.z);
+    const geometry = node.group.userData.geometry;
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    const radius = Math.hypot(Math.max(Math.abs(box.min.x), Math.abs(box.max.x)), Math.max(Math.abs(box.min.z), Math.abs(box.max.z))) * node.group.scale.x + 0.05;
+    selectionRing.scale.setScalar(Math.max(0.8, radius / 0.17));
+    selectionRing.position.set(node.group.position.x, sandHeightAt(node.group.position.x, node.group.position.z) + 0.08, node.group.position.z);
     selectionRing.visible = true;
   }
 
@@ -441,7 +471,7 @@ export function createView3D({
       if (uniforms) uniforms.uTime.value = t;
     });
     if (selectionRing && selectionRing.visible) {
-      selectionRing.material.opacity = 0.5 + Math.sin(t * 2.2) * 0.18;
+      selectionRing.material.opacity = reduceMotion ? 0.95 : 0.88 + Math.sin(t * 2.2) * 0.07;
     }
     scene3d.update(dt, t);
     animationHandle = requestAnimationFrame(frame);
@@ -716,6 +746,14 @@ export function createView3D({
     spawnFood,
     get quality() { return currentQuality; },
     get hasSelection() { return Boolean(selection); },
+    get selectionFeedback() {
+      const group = highlightedNode?.group;
+      return {
+        id: highlightedNode?.item.id ?? null, visible: Boolean(selectionRing?.visible), intensity: group?.userData.material.emissiveIntensity ?? 0,
+        bottomY: group ? group.position.y + group.userData.geometry.boundingBox.min.y * group.scale.y : null,
+        sandY: group ? sandHeightAt(group.position.x, group.position.z) : null
+      };
+    },
     get isDisposed() { return disposed; },
     get rendererInfo() { return scene3d?.renderer?.info?.render || null; }
   };

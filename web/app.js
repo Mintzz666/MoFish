@@ -1023,6 +1023,7 @@ window.__mofish = {
   get quality() { return quality; },
   get editMode() { return editMode; },
   get selectedDecor() { return selectedDecorId; },
+  get selectionFeedback() { return view?.selectionFeedback || null; },
   get pendingFeeds() { return engine.pendingFeeds; },
   get version() { return STATE_VERSION; },
   get decorCounts() {

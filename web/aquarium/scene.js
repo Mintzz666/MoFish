@@ -15,6 +15,10 @@ export const TANK = Object.freeze({
   front: 1.0
 });
 
+export function sandHeightAt(x, z) {
+  return TANK.sandY + Math.sin(x * 1.1 + z * 0.7) * 0.035 + Math.sin(x * 2.3 - z * 1.4) * 0.018 + 0.02;
+}
+
 export function tankFitScale(aspect) {
   // Match the default camera's 42° vertical field of view and 0.32 pitch.
   const halfFov = Math.tan(THREE.MathUtils.degToRad(42 / 2));
@@ -306,8 +310,7 @@ export function createTankScene({ canvas, quality = 'high' }) {
   for (let i = 0; i < sandPos.count; i += 1) {
     const x = sandPos.getX(i);
     const z = sandPos.getZ(i);
-    const dune = Math.sin(x * 1.1 + z * 0.7) * 0.035 + Math.sin(x * 2.3 - z * 1.4) * 0.018;
-    sandPos.setY(i, dune + 0.02);
+    sandPos.setY(i, sandHeightAt(x, z) - TANK.sandY);
     const shade = clamp01(0.5 + Math.sin(x * 0.8) * 0.2 - z * 0.12);
     const color = cSand.clone().lerp(cSandDeep, shade * 0.55);
     sandColors.push(color.r, color.g, color.b);
