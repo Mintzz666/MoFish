@@ -653,7 +653,8 @@ function refreshDecorPanel() {
   // 浮动工具条位于鱼缸内底部：小屏上面板可能在折叠区，确认/取消也必须看得见。
   floatBar.hidden = !(editMode === 'decor' && item);
   if (item) $('decor-float-name').textContent = `${typeName} · ${isPending ? '待确认' : '已选中'}`;
-  $('float-confirm').hidden = !isPending;
+  $('float-confirm').hidden = false;
+  $('float-confirm').textContent = isPending ? '放在这里' : '完成布景';
   $('float-cancel').hidden = !isPending;
   for (const id of ['decor-rotate', 'decor-scale-down', 'decor-scale-up', 'decor-reshuffle', 'decor-delete']) {
     $(id).disabled = isPending && id === 'decor-delete';
@@ -779,7 +780,16 @@ document.querySelectorAll('[data-decor-nudge]').forEach(button => {
     save();
   };
 });
-$('float-confirm').onclick = () => { if (!$('decor-confirm').disabled) $('decor-confirm').click(); };
+$('float-confirm').onclick = () => {
+  if (!canEditAquarium()) return;
+  if (pendingDecorId) {
+    if (!$('decor-confirm').disabled) $('decor-confirm').click();
+    return;
+  }
+  save();
+  applyEditMode('view');
+  toast('布景已完成。');
+};
 $('float-cancel').onclick = () => $('decor-cancel').click();
 $('detail-rename').onclick = () => openFishDialog(activeFishId);
 

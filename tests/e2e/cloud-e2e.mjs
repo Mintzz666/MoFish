@@ -623,6 +623,11 @@ async function main() {
   check('方向微调一次撤销即可恢复', Math.abs((await devicePhaseB.evaluate('window.__mofish.state.decor.at(-1).x')) - beforeNudge) < 1e-6);
   check('取消按钮隐藏时不占据可点击布局', await devicePhaseB.evaluate(`document.getElementById('float-cancel').getClientRects().length === 0`));
   check('工具条位于鱼缸内', await devicePhaseB.evaluate(`(()=>{const a=document.getElementById('aquarium').getBoundingClientRect(), b=document.getElementById('decor-float').getBoundingClientRect();return b.top >= a.top && b.bottom <= a.bottom;})()`));
+  const beforeFinish = await devicePhaseB.evaluate('JSON.stringify(window.__mofish.state.decor)');
+  check('已选中造景显示完成布景按钮', await devicePhaseB.evaluate(`!document.getElementById('float-confirm').hidden && document.getElementById('float-confirm').textContent === '完成布景'`));
+  await devicePhaseB.click('#float-confirm');
+  check('完成布景收起工具条、取消选中并回到观赏', await devicePhaseB.evaluate(`window.__mofish.editMode === 'view' && window.__mofish.selectedDecor === null && document.getElementById('decor-float').hidden`));
+  check('完成布景保留刚才的造景调整', (await devicePhaseB.evaluate('JSON.stringify(window.__mofish.state.decor)')) === beforeFinish);
 
   // 2D 降级与画质
   await devicePhaseB.click('#toggle-2d');
