@@ -201,13 +201,15 @@ function updateRendererChrome() {
   $('toggle-2d').textContent = is2d ? '3D' : '2D';
   $('toggle-2d').setAttribute('title', is2d ? '切换到 3D' : '切换到 2D');
   $('renderer-note').hidden = !is2d;
-  $('renderer-note').textContent = is2d ? '2D 模式 · 布景编辑请切回 3D' : '';
+  $('renderer-note').textContent = is2d ? '2D 模式 · 更多互动请切回 3D' : '';
   $('retry-3d').hidden = !is2d;
   $('mode-decor').disabled = is2d;
   $('camera-reset').disabled = is2d;
   $('quality').disabled = is2d;
   $('play-mode').disabled = is2d;
+  $('play-mode').title = is2d ? '逗鱼需要 3D 模式' : '让小鱼跟随手指或鼠标';
   $('play-mode').setAttribute('aria-pressed', String(Boolean(view?.playMode)));
+  canvas.setAttribute('aria-label', is2d ? '鱼缸：轻触水面或按空格投食，点鱼查看成长；布景和逗鱼请切回3D' : '鱼缸：观赏时轻触水面喂食、点鱼打招呼；布景时可拖动造景；按空格投食');
 }
 
 function applyEditMode(next) {
@@ -230,7 +232,7 @@ function applyEditMode(next) {
   $('decor-panel').classList.toggle('editing', next === 'decor');
   showTip(next === 'decor'
     ? '点选水草、石头或沉木；拖动换位置，松手即保存。'
-    : '轻触水面喂食，点小鱼打招呼；打开「逗鱼」可跟随手指或鼠标。');
+    : viewMode === '2d' ? '轻触水面喂食，点小鱼查看成长；布景和逗鱼请切回 3D。' : '轻触水面喂食，点小鱼打招呼；打开「逗鱼」可跟随手指或鼠标。');
   refreshPanels();
 }
 
