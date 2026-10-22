@@ -1,0 +1,137 @@
+{
+  "date": "2026-10-22",
+  "environment": "Codex local Project; Node 24.19.0",
+  "branch": "codex/phase-c-shared-aquariums",
+  "deployment": {
+    "url": "https://mofish-phase-c.tibo-reset-notifier.workers.dev/",
+    "sourceSha": "2282ce24b530428d27d5f5eaa69e4fa995868a65",
+    "worker": "mofish-phase-c",
+    "cloudflareVersion": "de72405c-a89e-4fb4-9039-8386b2331c0c",
+    "projectRef": "gbcfyqtbezkgkstrfbzn",
+    "exactAssetMatchCount": 10,
+    "checksPassed": 57,
+    "checksTotal": 57,
+    "versionAnnotationVerified": true,
+    "assets": [
+      {
+        "file": "index.html",
+        "bytes": 16152,
+        "sha256": "84b091472cd1a28b1087593b7a29cb2af9cb1a414ab262dab852febe7174f046",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "app.js",
+        "bytes": 883726,
+        "sha256": "66b0656209a889b36ca7cb1d5cd507daf06f6ad6f42d07c1bce649398c568d77",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "style.css",
+        "bytes": 27509,
+        "sha256": "4a9f2e0435b0f14bc1faa4f319fdc92fa40c1c6bbd2856aa6b9cd62bfde084e4",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "sharing.css",
+        "bytes": 11035,
+        "sha256": "14ed52432cc96a8372ccb60547d34c8255289d5e3ced8d2ebe224ee7c0ff4804",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "sw.js",
+        "bytes": 2029,
+        "sha256": "15dfa36299fec3b066e66d69068f64ecb782936d0a573842a5e2f622d22a0f6a",
+        "cache": "no-cache"
+      },
+      {
+        "file": "config.js",
+        "bytes": 353,
+        "sha256": "f8e7c8e698b7a53c0e897c71a0a88c6ebb908266585b52e9c099fa462d65dacd",
+        "cache": "no-cache"
+      },
+      {
+        "file": "deployment.json",
+        "bytes": 148,
+        "sha256": "2c1ffd24dfb3ad8b525f07695b360fb2fed78d50794d8ab41e123398375f449c",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "icon.svg",
+        "bytes": 355,
+        "sha256": "3b2991764aae50b31851329a495ae09596a378d1366f7e820027591670313f52",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "manifest.webmanifest",
+        "bytes": 253,
+        "sha256": "9aea9a430cca5adce2730007b8bdc1885d703cf39dbdf6d72392e05d7d1b100e",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "THIRD-PARTY-NOTICES.txt",
+        "bytes": 5893,
+        "sha256": "84fdb5db8069ceb7d9a1b9c2866a36fb29d3b21743444559c8b8196afd384b9d",
+        "cache": "public, max-age=0, must-revalidate"
+      }
+    ]
+  },
+  "tests": {
+    "strictNodeAndPostgres": {
+      "passed": 250,
+      "total": 250,
+      "skipped": 0
+    },
+    "fullBrowserFakeBackend": {
+      "passed": 103,
+      "total": 103
+    },
+    "finalVisualInteraction2dNarrowResource": {
+      "passed": 49,
+      "total": 49
+    },
+    "realBHttp": {
+      "passed": 64,
+      "total": 64
+    },
+    "realCRpcRealtime": {
+      "passed": 31,
+      "total": 31
+    },
+    "realDualAccountBrowser": {
+      "passed": 25,
+      "total": 25
+    },
+    "productionDependencyKnownVulnerabilities": 0
+  },
+  "cleanup": {
+    "temporaryAccountsDeletedAnd404Confirmed": 8,
+    "knownTestProcessesExited": 10,
+    "browserProfilesAbsent": 6,
+    "ownSafariPrivateWindowClosed": true,
+    "originalSafariWindowRestored": true,
+    "evidenceRetainedInIgnoredTaskDirectory": true
+  },
+  "protected": {
+    "aWorkerDeploymentHistoryUnchanged": true,
+    "bWorkerDeploymentHistoryUnchanged": true,
+    "hermesHead": "23906074471d1764f103f3e0af127221ffc9ed2f",
+    "hermesClean": true,
+    "databaseMigrationCountUnchanged": 4,
+    "schemaChanged": false,
+    "paidResourcesCreated": false,
+    "mainMerged": false,
+    "tagged": false,
+    "released": false
+  },
+  "boundaries": {
+    "nativeSafariDesktopVerified": true,
+    "mobileViewportIsRealDevice": false,
+    "dotAvailable": false,
+    "realDeviceTouchThermalBatteryAccepted": false,
+    "audioListeningAccepted": false,
+    "actualEmailDeliveryAndClickAccepted": false,
+    "userFinalAestheticAcceptance": false,
+    "v1Accepted": false
+  },
+  "localEvidenceDirectory": ".local/polish-20261022/"
+}
