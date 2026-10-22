@@ -5,6 +5,7 @@
 // 布景拖拽只在 3D 提供，2D 下会提示切回 3D 编辑（见 index.html 的提示）。
 import { FISH_TYPE_BY_ID, DECOR_KINDS } from './catalog.js';
 import { fishAppearance, decorAppearance, fishSizeFactor, fishProportions, mulberry32, hashSeed } from './model.js';
+import { angleDelta, turnToward, uprightFishPose } from './aquarium/sprite-motion.js';
 
 const TAU = Math.PI * 2;
 const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
@@ -15,7 +16,8 @@ export function createView2D({
   reduceMotion = false,
   onPickFish = () => {},
   onEat = () => {},
-  onFeed = () => {}
+  onFeed = () => {},
+  canFeed = () => true
 }) {
   const ctx = canvas.getContext('2d');
   let state = null;
@@ -45,18 +47,20 @@ export function createView2D({
   function setState(next) {
     state = next;
     const seen = new Set();
-    next.fish.forEach((fish) => {
+    next.fish.forEach((fish, index) => {
       seen.add(fish.id);
       let agent = agents.get(fish.id);
       if (!agent) {
         agent = {
           id: fish.id,
-          x: W * (0.2 + Math.random() * 0.6),
-          y: H * (0.3 + Math.random() * 0.4),
+          x: W * (0.14 + 0.72 * (next.fish.length < 2 ? 0.5 : index / (next.fish.length - 1))),
+          y: H * (0.34 + (index % 3) * 0.12),
           angle: Math.random() * TAU,
           speed: 20,
           phase: Math.random() * TAU,
           bend: 0,
+          wanderTarget: null,
+          wanderUntil: 0,
           fish
         };
         agents.set(fish.id, agent);
@@ -76,16 +80,44 @@ export function createView2D({
   }
 
   function spawnFood(x, y, count = 5) {
+    if (!canFeed()) return false;
+    const b = bounds();
     for (let i = 0; i < count; i += 1) {
-      foods.push({ x: x + (Math.random() - 0.5) * 26, y: y + (Math.random() - 0.5) * 10, vy: 9 + Math.random() * 6, age: 0 });
+      foods.push({
+        x: clamp(x + (Math.random() - 0.5) * 26, b.left, b.right),
+        y: clamp(y + (Math.random() - 0.5) * 10, b.top, b.bottom),
+        vy: 9 + Math.random() * 6,
+        age: 0
+      });
     }
     if (foods.length > 40) foods.splice(0, foods.length - 40);
     ripples.push({ x, y, age: 0 });
+    return true;
   }
 
   /** 鱼在 2D 里的可用水层：上留水面、下留沙面与前景水草。 */
   function bounds() {
     return { top: H * 0.22, bottom: H * 0.82, left: 18, right: W - 18 };
+  }
+
+  function chooseWanderTarget(agent, b, t) {
+    const width = b.right - b.left;
+    const height = b.bottom - b.top;
+    const insetX = Math.min(72, width * 0.15);
+    const minX = b.left + insetX;
+    const maxX = b.right - insetX;
+    const middle = clamp((b.left + b.right) * 0.5, minX, maxX);
+    const splitPad = Math.min(38, width * 0.07);
+    const targetMinX = agent.x < middle ? Math.min(maxX, middle + splitPad) : minX;
+    const targetMaxX = agent.x < middle ? maxX : Math.max(minX, middle - splitPad);
+    const insetY = Math.min(42, height * 0.16);
+    const minY = b.top + insetY;
+    const maxY = b.bottom - insetY;
+    agent.wanderTarget = {
+      x: targetMinX + Math.random() * Math.max(0, targetMaxX - targetMinX),
+      y: minY + Math.random() * Math.max(0, maxY - minY)
+    };
+    agent.wanderUntil = t + 8 + Math.random() * 4;
   }
 
   function update(dt, t) {
@@ -102,7 +134,8 @@ export function createView2D({
       }
       let desired;
       let speed = agent.baseSpeed;
-      if (target && best < 260) {
+      const chasing = Boolean(target && best < 260);
+      if (chasing) {
         desired = Math.atan2(target.y - agent.y, target.x - agent.x);
         speed = agent.baseSpeed * 1.8;
         if (best < 14) {
@@ -111,30 +144,57 @@ export function createView2D({
           onEat(fish.id, { x: target.x, y: target.y });
         }
       } else {
-        agent.phase += dt * 0.5;
-        desired = agent.angle + Math.sin(t * 0.45 + agent.phase) * dt * 1.2;
-        speed = agent.baseSpeed * (0.85 + 0.25 * Math.sin(t * 0.3 + agent.phase));
+        const distance = agent.wanderTarget
+          ? Math.hypot(agent.wanderTarget.x - agent.x, agent.wanderTarget.y - agent.y)
+          : Infinity;
+        if (!agent.wanderTarget || distance < 42 || t >= agent.wanderUntil) chooseWanderTarget(agent, b, t);
+        desired = Math.atan2(agent.wanderTarget.y - agent.y, agent.wanderTarget.x - agent.x);
+        agent.phase += dt * 0.22;
+        speed = agent.baseSpeed * (0.92 + 0.08 * Math.sin(t * 0.28 + agent.phase));
+        speed *= clamp(distance / 110, 0.58, 1);
       }
-      const margin = 70;
-      if (agent.x > b.right - margin) desired += (1 - (b.right - agent.x) / margin) * 1.5;
-      if (agent.x < b.left + margin) desired -= (1 - (agent.x - b.left) / margin) * 1.5;
-      if (agent.y < b.top + 40) desired += (1 - (agent.y - b.top) / 40) * 1.2;
-      if (agent.y > b.bottom - 40) desired -= (1 - (b.bottom - agent.y) / 40) * 1.2;
-      // 避开大型石头/沉木的横向位置，避免「穿石头」
-      for (const item of state.decor) {
-        if (item.kind === 'plant') continue;
-        const cx = item.x * W;
-        const cw = (item.kind === 'rock' ? 46 : 60) * item.scale;
-        if (Math.abs(agent.x - cx) < cw && agent.y > b.bottom - 70) desired = agent.x < cx ? Math.PI : 0;
+
+      let steerX = Math.cos(desired);
+      let steerY = Math.sin(desired);
+      if (!chasing) {
+        const marginX = Math.min(72, (b.right - b.left) * 0.22);
+        const marginY = Math.min(46, (b.bottom - b.top) * 0.24);
+        if (agent.x < b.left + marginX) steerX += (1 - (agent.x - b.left) / marginX) * 2.2;
+        if (agent.x > b.right - marginX) steerX -= (1 - (b.right - agent.x) / marginX) * 2.2;
+        if (agent.y < b.top + marginY) steerY += (1 - (agent.y - b.top) / marginY) * 2;
+        if (agent.y > b.bottom - marginY) steerY -= (1 - (b.bottom - agent.y) / marginY) * 2;
       }
+
+      // Give nearby fish and low hardscape a gentle berth without snapping the heading.
       for (const other of list) {
         if (other === agent) continue;
-        const d = Math.hypot(other.x - agent.x, other.y - agent.y);
-        if (d < 26 && d > 0.001) desired = Math.atan2(agent.y - other.y, agent.x - other.x);
+        const dx = agent.x - other.x;
+        const dy = agent.y - other.y;
+        const d = Math.hypot(dx, dy);
+        if (d < 30 && d > 0.001) {
+          const strength = (30 - d) / 30;
+          steerX += (dx / d) * strength * 0.9;
+          steerY += (dy / d) * strength * 0.9;
+        }
       }
-      const diff = Math.atan2(Math.sin(desired - agent.angle), Math.cos(desired - agent.angle));
-      const turn = clamp(diff, -agent.turnRate * dt, agent.turnRate * dt);
-      agent.angle += turn;
+      if (!chasing) {
+        for (const item of state?.decor || []) {
+          if (item.kind === 'plant') continue;
+          const cx = item.x * W;
+          const clearance = (item.kind === 'rock' ? 46 : 60) * item.scale + 18;
+          const dx = agent.x - cx;
+          const lower = clamp((agent.y - (b.bottom - 112)) / 112, 0, 1);
+          const strength = clamp((clearance - Math.abs(dx)) / clearance, 0, 1) * lower;
+          if (strength > 0) {
+            steerX += Math.sign(dx) * strength * 1.1;
+            steerY -= strength * 1.5;
+          }
+        }
+      }
+      desired = Math.atan2(steerY, steerX);
+      const nextAngle = turnToward(agent.angle, desired, agent.turnRate * dt);
+      const turn = angleDelta(agent.angle, nextAngle);
+      agent.angle = nextAngle;
       agent.bend += (clamp(turn / Math.max(dt, 0.001) / 3, -1, 1) - agent.bend) * Math.min(1, dt * 5);
       agent.speed += (speed * speedScale - agent.speed) * Math.min(1, dt * 2);
       agent.x += Math.cos(agent.angle) * agent.speed * dt;
@@ -156,38 +216,48 @@ export function createView2D({
 
   // ---------------------------------------------------------------- 绘制
   function drawBackground(t) {
+    const motionScale = reduceMotion ? 0.18 : 1;
     const bg = ctx.createLinearGradient(0, 0, 0, H);
     const nightK = nightMix;
     const mix = (a, b) => `rgb(${Math.round(a[0] + (b[0] - a[0]) * nightK)},${Math.round(a[1] + (b[1] - a[1]) * nightK)},${Math.round(a[2] + (b[2] - a[2]) * nightK)})`;
-    bg.addColorStop(0, mix([126, 178, 170], [17, 36, 43]));
-    bg.addColorStop(0.55, mix([96, 156, 149], [14, 32, 38]));
-    bg.addColorStop(1, mix([72, 128, 122], [10, 26, 31]));
+    bg.addColorStop(0, mix([194, 225, 211], [17, 36, 43]));
+    bg.addColorStop(0.55, mix([153, 197, 184], [14, 32, 38]));
+    bg.addColorStop(1, mix([112, 164, 148], [10, 26, 31]));
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, W, H);
 
-    // 柔和光柱
-    for (let i = 0; i < 4; i += 1) {
-      const x = W * (0.16 + i * 0.22) + Math.sin(t * 0.12 + i) * 14;
-      const g = ctx.createLinearGradient(x, 0, x + 60, H);
-      g.addColorStop(0, `rgba(255,252,238,${0.16 * (1 - nightMix * 0.6)})`);
+    // Soft daylight bands keep the water clear without a glossy beam effect.
+    for (let i = 0; i < 3; i += 1) {
+      const x = W * (0.18 + i * 0.3) + Math.sin(t * 0.1 * motionScale + i) * 10;
+      const g = ctx.createLinearGradient(x, 0, x + 42, H);
+      g.addColorStop(0, `rgba(255,252,238,${0.075 * (1 - nightMix * 0.55)})`);
       g.addColorStop(1, 'rgba(255,255,255,0)');
       ctx.fillStyle = g;
       ctx.beginPath();
-      ctx.moveTo(x - 26, 0);
-      ctx.lineTo(x + 22, 0);
-      ctx.lineTo(x + 120, H);
-      ctx.lineTo(x - 46, H);
+      ctx.moveTo(x - 14, 0);
+      ctx.lineTo(x + 14, 0);
+      ctx.lineTo(x + 72, H);
+      ctx.lineTo(x - 28, H);
       ctx.fill();
     }
-    // 水面波纹
-    ctx.strokeStyle = `rgba(255,255,255,${0.22 * (1 - nightMix * 0.4)})`;
+    // A narrow surface glint and a few broken reflections.
+    ctx.strokeStyle = `rgba(255,255,255,${0.24 * (1 - nightMix * 0.4)})`;
     ctx.lineWidth = 1;
-    for (let i = 0; i < 3; i += 1) {
+    for (let i = 0; i < 2; i += 1) {
       ctx.beginPath();
-      for (let x = 0; x <= W; x += 12) {
-        const y = 14 + i * 7 + Math.sin(x * 0.02 + t * (0.8 + i * 0.2)) * 2.2;
+      for (let x = 0; x <= W; x += 14) {
+        const y = 13 + i * 6 + Math.sin(x * 0.018 + t * (0.7 + i * 0.16) * motionScale) * 1.5;
         if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
       }
+      ctx.stroke();
+    }
+    ctx.strokeStyle = `rgba(244, 251, 234, ${0.12 * (1 - nightMix * 0.45)})`;
+    for (let i = 0; i < 7; i += 1) {
+      const x = ((i * 149 + t * 7 * motionScale) % (W + 60)) - 30;
+      const y = 34 + (i % 4) * 17;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.quadraticCurveTo(x + 12, y - 2, x + 28, y);
       ctx.stroke();
     }
     // 沙面
@@ -202,6 +272,22 @@ export function createView2D({
     ctx.lineTo(W, H);
     ctx.lineTo(0, H);
     ctx.fill();
+    ctx.strokeStyle = `rgba(105, 111, 81, ${0.24 * (1 - nightMix * 0.35)})`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, sandY + 1);
+    ctx.bezierCurveTo(W * 0.3, sandY - 13, W * 0.66, sandY + 9, W, sandY - 5);
+    ctx.stroke();
+    const grain = mulberry32(2481);
+    ctx.fillStyle = `rgba(103, 91, 62, ${0.22 * (1 - nightMix * 0.5)})`;
+    for (let i = 0; i < 38; i += 1) {
+      const x = grain() * W;
+      const y = sandY + 8 + grain() * Math.max(1, H - sandY - 10);
+      const size = 0.6 + grain() * 0.75;
+      ctx.beginPath();
+      ctx.arc(x, y, size, 0, TAU);
+      ctx.fill();
+    }
     // 水面焦散（极轻）
     if (!reduceMotion) {
       ctx.globalAlpha = 0.06 * (1 - nightMix * 0.5);
@@ -223,25 +309,126 @@ export function createView2D({
     const baseY = H * 0.84 - (1 - item.z) * 26;
     const scale = clamp(H / 460, 0.7, 1.5) * item.scale * (0.95 + item.z * 0.3) * 1.25;
     const rnd = mulberry32(item.seed);
+    const swayScale = reduceMotion ? 0.25 : 1;
+    const sway = Math.sin(t * 0.55 + item.seed % 11) * 3 * scale * swayScale;
+    const highlight = a.highlight || a.color;
     ctx.save();
     ctx.translate(baseX, baseY);
-    ctx.strokeStyle = a.color;
-    ctx.fillStyle = a.color;
-    const count = a.shape === 'carpet' ? 26 : a.shape === 'moss' ? 5 : Math.round((a.params.blades || a.params.leaves || a.params.fronds || a.params.stems || 5) * 0.8);
-    for (let i = 0; i < count; i += 1) {
-      const lean = (rnd() - 0.5) * 46 * scale;
-      const h = (a.params.height || 0.5) * 120 * scale * (0.6 + rnd() * 0.6);
-      const sway = Math.sin(t * 0.7 + i * 1.7 + item.seed % 7) * 5 * scale * (reduceMotion ? 0.3 : 1);
-      ctx.globalAlpha = 0.55 + rnd() * 0.4;
-      ctx.lineWidth = Math.max(1, (a.params.width || 0.02) * 260 * scale);
+    const drawLeaf = (length, width, color, alpha = 1) => {
+      ctx.save();
+      ctx.globalAlpha *= alpha;
+      ctx.fillStyle = color;
       ctx.beginPath();
       ctx.moveTo(0, 0);
-      ctx.bezierCurveTo(lean * 0.2, -h * 0.35, lean + sway, -h * 0.7, lean + sway * 1.4, -h);
+      ctx.bezierCurveTo(width * 0.72, -length * 0.24, width * 0.82, -length * 0.72, 0, -length);
+      ctx.bezierCurveTo(-width * 0.82, -length * 0.72, -width * 0.72, -length * 0.24, 0, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(230, 246, 221, 0.34)';
+      ctx.lineWidth = Math.max(0.55, scale * 0.75);
+      ctx.beginPath();
+      ctx.moveTo(0, -length * 0.08);
+      ctx.quadraticCurveTo(width * 0.04, -length * 0.48, 0, -length * 0.9);
       ctx.stroke();
-      if (a.shape === 'rosette' || a.shape === 'fern' || a.shape === 'stem') {
+      ctx.restore();
+    };
+
+    // Root clumps tie each plant into the sand instead of leaving floating stems.
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = '#284d42';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 28 * scale, 5 * scale, 0, 0, TAU);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    if (a.shape === 'carpet' || a.shape === 'moss') {
+      const count = a.shape === 'carpet' ? 18 : 11;
+      const spread = (a.shape === 'carpet' ? 74 : 60) * scale;
+      for (let i = 0; i < count; i += 1) {
+        const u = count === 1 ? 0 : i / (count - 1) - 0.5;
+        const x = u * spread;
+        const length = (a.shape === 'carpet' ? 22 : 30) * scale * (0.72 + rnd() * 0.46);
+        const lean = u * 0.95 + (rnd() - 0.5) * 0.24 + sway * 0.012;
+        ctx.save();
+        ctx.translate(x, 0);
+        ctx.rotate(lean);
+        drawLeaf(length, length * 0.34, i % 3 === 0 ? highlight : a.color, 0.84 + rnd() * 0.16);
+        ctx.restore();
+      }
+    } else if (a.shape === 'rosette') {
+      const leaves = Math.max(8, Math.min(14, Math.round(a.params.leaves || 10)));
+      for (let i = 0; i < leaves; i += 1) {
+        const angle = -0.88 + (i / Math.max(1, leaves - 1)) * 1.76;
+        const length = (48 + (1 - Math.abs(angle) / 0.9) * 20) * scale;
+        ctx.save();
+        ctx.translate(sway * 0.4, 0);
+        ctx.rotate(angle);
+        drawLeaf(length, length * 0.24, i % 3 === 0 ? highlight : a.color, 0.9);
+        ctx.restore();
+      }
+      ctx.fillStyle = highlight;
+      ctx.globalAlpha = 0.72;
+      ctx.beginPath();
+      ctx.ellipse(0, -8 * scale, 8 * scale, 13 * scale, 0, 0, TAU);
+      ctx.fill();
+    } else if (a.shape === 'fern') {
+      const fronds = Math.max(2, Math.min(5, Math.round(a.params.fronds || 3)));
+      for (let f = 0; f < fronds; f += 1) {
+        const offset = (f - (fronds - 1) / 2) * 10 * scale;
+        const height = (78 + rnd() * 18) * scale;
+        const lean = (f - (fronds - 1) / 2) * 17 * scale;
+        ctx.strokeStyle = a.color;
+        ctx.lineWidth = Math.max(1.2, 1.8 * scale);
         ctx.beginPath();
-        ctx.ellipse(lean + sway, -h * 0.8, 7 * scale, 3.4 * scale, lean * 0.01, 0, TAU);
-        ctx.fill();
+        ctx.moveTo(offset, 0);
+        ctx.bezierCurveTo(offset + lean * 0.4, -height * 0.4, offset + lean + sway, -height * 0.72, offset + lean + sway, -height);
+        ctx.stroke();
+        for (let j = 1; j <= 5; j += 1) {
+          const u = j / 6;
+          const x = offset + lean * u + sway * u;
+          const y = -height * u;
+          const size = (22 * scale) * (1 - u * 0.46);
+          for (const side of [-1, 1]) {
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.rotate(side * (0.72 - u * 0.12));
+            drawLeaf(size, size * 0.34, side < 0 ? a.color : highlight, 0.92);
+            ctx.restore();
+          }
+        }
+      }
+    } else {
+      const stems = Math.max(2, Math.min(6, Math.round(a.params.stems || a.params.leaves || 4)));
+      for (let s = 0; s < stems; s += 1) {
+        const offset = (s - (stems - 1) / 2) * 9 * scale;
+        const height = (a.params.height || 0.5) * 138 * scale * (0.78 + rnd() * 0.34);
+        const lean = (rnd() - 0.5) * 36 * scale;
+        const tipX = offset + lean + sway;
+        ctx.strokeStyle = a.color;
+        ctx.lineWidth = Math.max(1.2, (a.params.width || 0.02) * 110 * scale);
+        ctx.beginPath();
+        ctx.moveTo(offset, 0);
+        ctx.bezierCurveTo(offset + lean * 0.2, -height * 0.32, offset + lean * 0.8 + sway, -height * 0.72, tipX, -height);
+        ctx.stroke();
+        const pairs = Math.max(3, Math.min(6, Math.round((a.params.leaves || 7) / 2)));
+        for (let j = 1; j <= pairs; j += 1) {
+          const u = j / (pairs + 1);
+          const x = offset + lean * u + sway * u;
+          const y = -height * u;
+          const length = 24 * scale * (1 - u * 0.28);
+          for (const side of [-1, 1]) {
+            if (s % 2 && j % 2 && side > 0) continue;
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.rotate(side * (0.78 - u * 0.12));
+            drawLeaf(length, length * 0.31, side < 0 ? a.color : highlight, 0.88);
+            ctx.restore();
+          }
+        }
+        ctx.save();
+        ctx.translate(tipX, -height);
+        drawLeaf(22 * scale, 7 * scale, highlight, 0.9);
+        ctx.restore();
       }
     }
     ctx.restore();
@@ -255,6 +442,10 @@ export function createView2D({
     const s = (a.params.size || 0.24) * 280 * item.scale * (0.8 + item.z * 0.4);
     ctx.save();
     ctx.translate(x, y);
+    ctx.fillStyle = 'rgba(35, 49, 42, 0.16)';
+    ctx.beginPath();
+    ctx.ellipse(3, s * 0.12, s * 0.48, s * 0.16, 0, 0, TAU);
+    ctx.fill();
     ctx.fillStyle = a.color;
     ctx.beginPath();
     if (a.shape === 'layered') {
@@ -278,10 +469,23 @@ export function createView2D({
       ctx.ellipse(0, 0, s * 0.44, s * 0.26, 0, 0, TAU);
     }
     ctx.fill();
-    ctx.globalAlpha = 0.35;
+    ctx.globalAlpha = 0.32;
     ctx.fillStyle = a.highlight;
     ctx.beginPath();
-    ctx.ellipse(-s * 0.12, -s * 0.1, s * 0.2, s * 0.08, -0.4, 0, TAU);
+    ctx.moveTo(-s * 0.34, -s * 0.08);
+    ctx.lineTo(-s * 0.12, -s * 0.27);
+    ctx.lineTo(s * 0.1, -s * 0.2);
+    ctx.lineTo(s * 0.01, -s * 0.05);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 0.15;
+    ctx.fillStyle = '#203a33';
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.28, s * 0.08);
+    ctx.lineTo(s * 0.3, s * 0.04);
+    ctx.lineTo(s * 0.16, s * 0.2);
+    ctx.lineTo(-s * 0.08, s * 0.21);
+    ctx.closePath();
     ctx.fill();
     ctx.restore();
   }
@@ -294,20 +498,48 @@ export function createView2D({
     const s = (a.params.length || 0.6) * 175 * item.scale;
     ctx.save();
     ctx.translate(x, y);
-    ctx.strokeStyle = a.color;
     ctx.lineCap = 'round';
     ctx.lineWidth = Math.max(2, (a.params.girth || 0.04) * 130 * item.scale);
-    ctx.beginPath();
-    ctx.moveTo(-s * 0.4, 0);
-    ctx.bezierCurveTo(-s * 0.1, -s * 0.3, s * 0.1, -s * 0.2, s * 0.4, -s * 0.42);
-    ctx.stroke();
-    ctx.lineWidth = Math.max(1.4, ctx.lineWidth * 0.5);
-    for (let i = 0; i < 3; i += 1) {
-      const t = 0.3 + i * 0.2;
+    const drawTrunk = (offsetY = 0) => {
       ctx.beginPath();
-      ctx.moveTo(-s * 0.4 + s * 0.8 * t, -s * 0.28 * t);
-      ctx.lineTo(-s * 0.4 + s * 0.8 * t + s * 0.2, -s * (0.45 + i * 0.06));
+      ctx.moveTo(-s * 0.4, offsetY);
+      ctx.bezierCurveTo(-s * 0.1, -s * 0.3 + offsetY, s * 0.1, -s * 0.2 + offsetY, s * 0.4, -s * 0.42 + offsetY);
       ctx.stroke();
+    };
+    const trunkWidth = ctx.lineWidth;
+    ctx.strokeStyle = 'rgba(31, 44, 36, 0.18)';
+    ctx.lineWidth = trunkWidth * 1.12;
+    drawTrunk(3);
+    ctx.strokeStyle = a.color;
+    ctx.lineWidth = trunkWidth;
+    drawTrunk();
+    ctx.strokeStyle = a.highlight || '#d6c59a';
+    ctx.globalAlpha = 0.5;
+    ctx.lineWidth = Math.max(1, trunkWidth * 0.24);
+    drawTrunk(-trunkWidth * 0.16);
+    ctx.globalAlpha = 1;
+    for (let i = 0; i < 3; i += 1) {
+      const u = 0.3 + i * 0.2;
+      ctx.strokeStyle = 'rgba(31, 44, 36, 0.16)';
+      ctx.lineWidth = Math.max(1, trunkWidth * 0.42);
+      ctx.beginPath();
+      ctx.moveTo(-s * 0.4 + s * 0.8 * u, -s * 0.28 * u + 2);
+      ctx.lineTo(-s * 0.4 + s * 0.8 * u + s * 0.2, -s * (0.45 + i * 0.06) + 2);
+      ctx.stroke();
+      ctx.strokeStyle = a.color;
+      ctx.lineWidth = Math.max(1.4, trunkWidth * 0.5);
+      ctx.beginPath();
+      ctx.moveTo(-s * 0.4 + s * 0.8 * u, -s * 0.28 * u);
+      ctx.lineTo(-s * 0.4 + s * 0.8 * u + s * 0.2, -s * (0.45 + i * 0.06));
+      ctx.stroke();
+      ctx.strokeStyle = a.highlight || '#d6c59a';
+      ctx.globalAlpha = 0.45;
+      ctx.lineWidth = Math.max(0.7, trunkWidth * 0.15);
+      ctx.beginPath();
+      ctx.moveTo(-s * 0.4 + s * 0.8 * u, -s * 0.28 * u - 0.6);
+      ctx.lineTo(-s * 0.4 + s * 0.8 * u + s * 0.2, -s * (0.45 + i * 0.06) - 0.6);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
     }
     ctx.restore();
   }
@@ -316,14 +548,17 @@ export function createView2D({
     const a = agent.appearance;
     const type = FISH_TYPE_BY_ID[agent.fish.species] || FISH_TYPE_BY_ID.sunset;
     const props = fishProportions(agent.fish.growth);
-    const scale = (H / 460) * 70 * fishSizeFactor(agent.fish.growth) * a.lenScale;
+    const scale = (H / 460) * 53 * (type.body.len / 0.62) * fishSizeFactor(agent.fish.growth) * a.lenScale;
     const bodyLen = scale * 1.5;
     const depth = type.body.depth * bodyLen;
-    const wiggle = Math.sin(t * (2.2 + type.motion.freq) + a.phase) * type.motion.wag;
+    const swimMotion = reduceMotion ? 0.38 : 1;
+    const wiggle = Math.sin(t * (2.2 + type.motion.freq) * swimMotion + a.phase) * type.motion.wag * swimMotion;
+    const pose = uprightFishPose(agent.angle);
     ctx.save();
     ctx.translate(agent.x, agent.y);
-    ctx.rotate(agent.angle);
-    ctx.globalAlpha = isNight ? 0.86 : 0.96;
+    ctx.rotate(pose.tilt);
+    ctx.scale(pose.flipX ? -1 : 1, 1);
+    ctx.globalAlpha = isNight ? 0.88 : 0.96;
 
     // 尾鳍
     ctx.fillStyle = a.fin;
@@ -370,6 +605,17 @@ export function createView2D({
     ctx.bezierCurveTo(-bodyLen * 0.5, 0, -bodyLen * 0.48, depth * 0.14, -bodyLen * 0.42, depth * 0.16);
     ctx.bezierCurveTo(-bodyLen * 0.05, depth * 0.6, bodyLen * 0.4, depth * 0.5, bodyLen * 0.5, 0);
     ctx.fill();
+    ctx.strokeStyle = 'rgba(27, 58, 51, 0.24)';
+    ctx.lineWidth = Math.max(0.8, bodyLen * 0.009);
+    ctx.stroke();
+
+    // A restrained pectoral fin gives the body a clear layered silhouette.
+    ctx.globalAlpha *= 0.58;
+    ctx.fillStyle = a.fin;
+    ctx.beginPath();
+    ctx.ellipse(-bodyLen * 0.02, depth * 0.09, bodyLen * 0.11, depth * 0.13, -0.52, 0, TAU);
+    ctx.fill();
+    ctx.globalAlpha = isNight ? 0.88 : 0.96;
 
     // 花纹
     ctx.save();
@@ -407,11 +653,11 @@ export function createView2D({
     // 眼睛
     ctx.fillStyle = a.eye;
     ctx.beginPath();
-    ctx.arc(bodyLen * 0.34, -depth * 0.1, bodyLen * 0.028 * props.eye, 0, TAU);
+    ctx.arc(bodyLen * 0.34, -depth * 0.1, bodyLen * 0.021 * props.eye, 0, TAU);
     ctx.fill();
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     ctx.beginPath();
-    ctx.arc(bodyLen * 0.35, -depth * 0.12, bodyLen * 0.01, 0, TAU);
+    ctx.arc(bodyLen * 0.35, -depth * 0.12, bodyLen * 0.008, 0, TAU);
     ctx.fill();
     ctx.restore();
   }
@@ -476,14 +722,19 @@ export function createView2D({
       onPickFish(picked.id);
       return;
     }
-    spawnFood(p.x, p.y, 5);
-    onFeed({ x: p.x, y: p.y, source: 'tap' });
+    if (spawnFood(p.x, p.y, 5)) onFeed({ x: p.x, y: p.y, source: 'tap' });
   });
 
   function feedRandom() {
-    spawnFood(W * (0.35 + Math.random() * 0.3), H * 0.3, 6);
-    onFeed({ source: 'button' });
+    if (spawnFood(W * (0.35 + Math.random() * 0.3), H * 0.3, 6)) onFeed({ source: 'button' });
   }
+
+  const onKeyDown = event => {
+    if (event.code !== 'Space' && event.key !== ' ') return;
+    event.preventDefault();
+    feedRandom();
+  };
+  canvas.addEventListener('keydown', onKeyDown);
 
   resize();
   start();
@@ -495,9 +746,14 @@ export function createView2D({
     dispose() {
       disposed = true;
       stop();
+      canvas.removeEventListener('keydown', onKeyDown);
       agents.clear();
       foods.length = 0;
+      ripples.length = 0;
     },
-    get kind() { return '2d'; }
+    get kind() { return '2d'; },
+    get motionInfo() {
+      return {foodCount:foods.length,fish:[...agents.values()].map(a=>({id:a.id,x:a.x,y:a.y,heading:a.angle,...uprightFishPose(a.angle)}))};
+    }
   };
 }

@@ -19,7 +19,9 @@ const TARGET_URL = 'https://gbcfyqtbezkgkstrfbzn.supabase.co';
 const TARGET_REF = 'gbcfyqtbezkgkstrfbzn';
 const C_ROOT = 'https://mofish-phase-c.tibo-reset-notifier.workers.dev/';
 const B_ROOT = 'https://mofish-phase-b.tibo-reset-notifier.workers.dev/';
-const OUTPUT_DIR = path.join(repo, '.local', 'phase-c-20261019');
+const artifactName=process.env.MOFISH_QA_RUN_NAME||`phase-c-browser-${new Date().toISOString().replace(/[:.]/g,'-')}`;
+if(!/^[a-zA-Z0-9_-]+$/.test(artifactName))throw Error('QA artifact name must be a local folder name');
+const OUTPUT_DIR = path.join(repo, '.local', artifactName);
 const SCREENSHOTS_DIR = path.join(OUTPUT_DIR, 'screenshots');
 const RESULTS_FILE = path.join(SCREENSHOTS_DIR, 'results.json');
 const OWNED_FILE = path.join(OUTPUT_DIR, 'browser-owned.json');
@@ -600,6 +602,17 @@ async function run() {
   await waitFor(ownerPage, `window.__mofish.state.night === ${!nightBefore}`, 'owner receives editor night change');
   requireCheck('编辑成员切换夜间状态并同步到主人', true);
 
+  await editorPage.send('Network.emulateNetworkConditions',{offline:true,latency:0,downloadThroughput:-1,uploadThroughput:-1});
+  await waitFor(editorPage,'navigator.onLine === false','isolated browser becomes offline');
+  await editorPage.click('#night');
+  await waitFor(editorPage,`window.__mofish.state.night === ${nightBefore}`,'offline change remains locally visible');
+  await delay(700);
+  requireCheck('浏览器实际断网时改动保留在本机、另一端不提前变化',await ownerPage.evaluate(`window.__mofish.state.night === ${!nightBefore}`));
+  await editorPage.send('Network.emulateNetworkConditions',{offline:false,latency:0,downloadThroughput:-1,uploadThroughput:-1});
+  await waitFor(editorPage,'navigator.onLine === true','isolated browser reconnects');
+  await waitFor(ownerPage,`window.__mofish.state.night === ${nightBefore}`,'owner receives offline replay after reconnect');
+  requireCheck('浏览器重连后离线操作同步到另一端',true);
+
   const decorCountBefore = await ownerPage.evaluate('window.__mofish.state.decor.length');
   await ownerPage.click('#toggle-2d');
   await waitFor(ownerPage, 'window.__mofish.renderer === "3d"', 'desktop 3D renderer ready', 90_000);
@@ -607,13 +620,13 @@ async function run() {
   await ownerPage.click('#mode-decor');
   await ownerPage.click('#add-rock');
   await waitFor(ownerPage, 'document.getElementById("float-confirm")?.hidden === false', 'new decor placement pending');
-  await ownerPage.click('#float-confirm');
+  await ownerPage.click('#mode-view');
   await waitFor(ownerPage, `window.__mofish.state.decor.length === ${decorCountBefore + 1}`, 'new decor committed on owner');
   const newDecorId = await ownerPage.evaluate('window.__mofish.state.decor.at(-1)?.id');
   await waitFor(editorPage,
     `window.__mofish.state.decor.some(item=>item.id===${JSON.stringify(newDecorId)})`,
     'editor receives new decor');
-  requireCheck('主人新增造景同步到编辑成员', Boolean(newDecorId));
+  requireCheck('主人新增造景退出布景后也会保存并同步到编辑成员', Boolean(newDecorId));
 
   await ownerPage.click('#mode-view');
   const desktopShot = path.join(SCREENSHOTS_DIR, `desktop-3d-shared-${RUN_ID}.png`);
@@ -638,6 +651,16 @@ async function run() {
     'document.getElementById("add-rock")?.disabled === true && document.getElementById("night")?.disabled === true && document.getElementById("detail-rename")?.disabled === true',
     'editor write controls disabled after viewer role', 90_000);
   requireCheck('viewer 权限生效后编辑页面写入按钮禁用', true);
+  await editorPage.evaluate('document.getElementById("tank").focus()');
+  await editorPage.send('Input.dispatchKeyEvent',{type:'keyDown',key:' ',code:'Space',windowsVirtualKeyCode:32});
+  await editorPage.send('Input.dispatchKeyEvent',{type:'keyUp',key:' ',code:'Space',windowsVirtualKeyCode:32});
+  requireCheck('viewer 在2D画布按空格也不能生成本机食物',await editorPage.evaluate('window.__mofish.motionInfo.foodCount === 0'));
+  await editorPage.click('#toggle-2d');
+  await waitFor(editorPage,'window.__mofish.renderer === "3d"','viewer 3D ready',90_000);
+  await editorPage.evaluate('document.getElementById("tank").focus()');
+  await editorPage.send('Input.dispatchKeyEvent',{type:'keyDown',key:' ',code:'Space',windowsVirtualKeyCode:32});
+  await editorPage.send('Input.dispatchKeyEvent',{type:'keyUp',key:' ',code:'Space',windowsVirtualKeyCode:32});
+  requireCheck('viewer 在3D画布按空格也不能生成本机食物',await editorPage.evaluate('window.__mofish.motionInfo.foodCount === 0'));
 
   await ownerPage.front();
   const removeId = await findMemberControl(ownerPage, editor.email, 'button');

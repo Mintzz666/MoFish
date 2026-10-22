@@ -6,11 +6,11 @@
   --sharing-accent: #267966;
   --sharing-accent-soft: #e4f2e8;
   --sharing-danger: #9d4b45;
-  width: min(42rem, calc(100vw - 1.25rem));
+  width: min(42rem, calc(100vw - 1.5rem));
   max-width: none;
   max-height: 90vh;
-  max-height: min(90dvh, 54rem);
-  padding: 1.35rem clamp(1rem, 3.4vw, 1.8rem) 1.5rem;
+  max-height: min(90dvh, calc(100dvh - max(0.75rem, env(safe-area-inset-top)) - max(0.75rem, env(safe-area-inset-bottom))), 54rem);
+  padding: 1.45rem clamp(1rem, 3.4vw, 1.8rem) 1.55rem;
   border: 1px solid rgba(27, 58, 51, 0.12);
   border-radius: 25px;
   color: var(--sharing-ink);
@@ -18,6 +18,7 @@
   box-shadow: 0 28px 90px -38px rgba(17, 49, 38, 0.42);
   overflow: auto;
   overscroll-behavior: contain;
+  scroll-padding-block: 1rem;
   font: inherit;
   line-height: 1.5;
 }
@@ -375,6 +376,21 @@
   .sharing-invite-fields { grid-template-columns: 1fr 1fr; }
   .sharing-field:first-child { grid-column: 1 / -1; }
   .sharing-form-actions > .sharing-button { flex: 1 1 auto; }
+}
+
+@media (max-height: 520px) and (orientation: landscape) {
+  .sharing-dialog {
+    width: min(48rem, calc(100vw - max(0.75rem, env(safe-area-inset-left)) - max(0.75rem, env(safe-area-inset-right))));
+    max-height: calc(100dvh - max(0.5rem, env(safe-area-inset-top)) - max(0.5rem, env(safe-area-inset-bottom)));
+    padding-block: 0.8rem;
+    border-radius: 18px;
+  }
+
+  .sharing-header { padding-bottom: 0.1rem; }
+  .sharing-lead { margin-bottom: 0.65rem; }
+  .sharing-content { gap: 0.65rem; }
+  .sharing-section,
+  .sharing-guest-card { padding: 0.8rem; }
 }
 
 @media (max-width: 360px) {

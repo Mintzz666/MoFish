@@ -40,6 +40,7 @@
         <button type="button" role="tab" id="mode-decor" aria-selected="false">布景</button>
       </div>
       <div class="stage-tools">
+        <button type="button" class="stage-tool-button" id="play-mode" aria-pressed="false" title="让小鱼跟随手指或鼠标">逗鱼</button>
         <button type="button" class="icon-button" id="camera-reset" title="回到默认视角" aria-label="回到默认视角">⟲</button>
         <label class="quality-pick" for="quality">
           <span>画质</span>
@@ -69,7 +70,7 @@
     <button type="button" class="solid small" id="float-confirm" hidden>放在这里</button>
     <button type="button" class="chip-button" id="float-cancel" hidden>取消</button>
   </div>
-    <p class="stage-tip" id="tank-tip">轻触水面就能投食；布景模式里可以挪动水草和石头。</p>
+    <p class="stage-tip" id="tank-tip">观赏时轻触喂食，点小鱼打招呼；打开「逗鱼」可跟随手指或鼠标</p>
     <div class="stage-footer">
       <span class="live-dot" aria-hidden="true"></span>
       <span id="stage-status">自在游动中</span>
@@ -94,9 +95,9 @@
     <div class="panel" id="fish-panel" aria-live="polite">
       <div class="panel-head">
         <p class="eyebrow">LITTLE COMPANION</p>
-        <h2 id="panel-title">每一条，都有自己的节奏。</h2>
+        <h2 id="panel-title">小鱼的成长手记</h2>
       </div>
-      <div id="panel-empty" class="panel-empty">点一条鱼，看看它多大了；或者从下面的小伙伴里选一条。</div>
+      <div id="panel-empty" class="panel-empty">选择一条小鱼，查看它的成长记录。</div>
       <div id="fish-detail" class="detail" hidden>
         <div class="detail-top">
           <div>
@@ -121,7 +122,7 @@
         <p class="eyebrow">AQUASCAPE</p>
         <h2 id="decor-title">摆一摆，让水底更自然。</h2>
       </div>
-      <div id="decor-empty" class="panel-empty">切到「布景」模式，点选水草、石头或沉木，就能挪动、转向和调整大小。</div>
+      <div id="decor-empty" class="panel-empty">切到「布景」后，选中水草、石头或沉木即可调整。</div>
       <div id="decor-detail" class="detail" hidden>
         <div class="detail-top">
           <div>
@@ -151,13 +152,13 @@
   <section class="below">
     <div class="companions">
       <p class="eyebrow">LITTLE COMPANIONS</p>
-      <h2>每一条，都有自己的节奏。</h2>
+      <h2>鱼缸里的小伙伴</h2>
       <div id="fish-list" class="fish-list"></div>
     </div>
     <aside class="aside-card">
       <span class="aside-symbol" aria-hidden="true">〰</span>
       <p>有时候，什么也不做，<br>也是一件很好的事。</p>
-      <small>离开时鱼儿会休息，回来时继续长大。<br>不用担心，它们不会因为忘记喂食而离开。</small>
+      <small>离开时鱼儿会休息，回来后继续长大；不用担心忘记喂食。</small>
     </aside>
   </section>
 </main>

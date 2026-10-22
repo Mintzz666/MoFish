@@ -37,12 +37,13 @@ function sampleCurve(values, u) {
   return (2 * f3 - 3 * f2 + 1) * p1 + (f3 - 2 * f2 + f) * m1 + (-2 * f3 + 3 * f2) * p2 + (f3 - f2) * m2;
 }
 
-function specOf(type) {
+function specOf(type, quality) {
   const b = type.body;
+  const detail = quality === 'low' ? 0.76 : 1;
   return {
-    cols: clamp(Math.round(14 * (b.len / 0.55)), 10, 20),
-    rows: clamp(Math.round(b.depth * 11), 5, 11),
-    depth: clamp(Math.round((b.width || 0.4) * 6), 2, 5),
+    cols: clamp(Math.round(20 * (b.len / 0.55) * detail), 14, 32),
+    rows: clamp(Math.round(b.depth * 22 * detail), 4, 22),
+    depth: clamp(Math.round((b.width || 0.4) * 6 * detail) * 2 + 1, 3, 9),
     head: b.head ?? 0.6,
     peduncle: b.peduncle ?? 0.3,
     tail: type.fins.tail || 'fork',
@@ -72,7 +73,8 @@ export function meshVoxels(voxels, origin = { x: 0, y: 0, z: 0 }, { voxel = VOXE
   const indices = [];
   const shade = new THREE.Color();
 
-  for (const v of voxels) {
+  // 同一格可能由茎/叶、身体/花纹反复写入，最后一次着色生效；只生成一份表面。
+  for (const v of filled.values()) {
     for (const face of FACES) {
       const [dx, dy, dz] = face.dir;
       if (filled.has(key(v.x + dx, v.y + dy, v.z + dz))) continue;
@@ -127,8 +129,9 @@ function colorOf(appearance, row, rows, pattern, col, cols) {
  * 返回 group，userData 里有 tailPivot / pectoralL / pectoralR 供视图层做摆动。
  */
 export function createFishMesh(type, appearance, growth, quality = 'high') {
-  const spec = specOf(type);
+  const spec = specOf(type, quality);
   const { cols, rows, depth } = spec;
+  const props = appearance.props || { head: 1, fin: 1, eye: 1 };
   const group = new THREE.Group();
   const bodyVoxels = [];
   const tailVoxels = [];
@@ -139,11 +142,12 @@ export function createFishMesh(type, appearance, growth, quality = 'high') {
   const column = [];
   for (let i = 0; i < cols; i += 1) {
     const u = i / (cols - 1);
-    const h = Math.max(2, Math.round((sampleCurve(PROFILE.h, u) * rows) / 2) * 2);   // 偶数高度：侧影对称不抖
-    const headTaper = u > 0.8 ? 1 - Math.pow((u - 0.8) / 0.2, 1.15) * 0.82 : 1;
-    const peduncle = i < tailStart ? 0.75 + (i / tailStart) * 0.25 : 1;
+    const h = Math.max(1, sampleCurve(PROFILE.h, u) * rows);
+    const headTaper = u > 0.72 ? 1 - Math.pow((u - 0.72) / 0.28, 1.5) * (1 - spec.head * 0.8) : 1;
+    const peduncle = i < tailStart ? 0.45 + spec.peduncle + (i / tailStart) * 0.25 : 1;
+    const juvenileHead = u > 0.62 ? props.head : 1;
     column.push({
-      h: Math.max(1, Math.round((h * headTaper * peduncle) / 2) * 2),
+      h: Math.max(1, Math.round(h * headTaper * peduncle * juvenileHead)),
       center: (rows - 1) / 2
     });
   }
@@ -156,8 +160,10 @@ export function createFishMesh(type, appearance, growth, quality = 'high') {
       if (dy > half) continue;
       // 椭圆截面：中间厚、上下薄（方块版的「圆身」）
       const edge = half === 0 ? 0 : 1 - Math.pow(dy / (half + 0.35), 2);
-      const thick = clamp(Math.round(depth * Math.sqrt(Math.max(0.2, edge))), 1, depth);
-      const zStart = z0 + Math.round((depth - thick) / 2);
+      const along = sampleCurve(PROFILE.w, i / (cols - 1));
+      const wanted = depth * Math.sqrt(Math.max(0, edge)) * Math.sqrt(Math.max(0.08, along));
+      const thick = clamp(1 + Math.round((wanted - 1) / 2) * 2, 1, depth);
+      const zStart = -(thick - 1) / 2;
       for (let d = 0; d < thick; d += 1) {
         const color = colorOf(appearance, r, rows, appearance.pattern, i, cols);
         const voxel = { x: i, y: r, z: zStart + d, color, target: i < tailStart ? 'tail' : 'body' };
@@ -183,7 +189,7 @@ export function createFishMesh(type, appearance, growth, quality = 'high') {
     if (zOuter === null) continue;
     at.get(`${eyeCol},${eyeRow},${zOuter}`).color = eyeColor;
     const pupil2 = at.get(`${eyeCol + 1},${eyeRow},${zOuter}`);
-    if (pupil2) pupil2.color = eyeColor;
+    if (pupil2 && (props.eye > 1.12 || rows > 9)) pupil2.color = eyeColor;
     const glint = at.get(`${eyeCol + 1},${eyeRow + 1},${zOuter}`);
     if (glint) glint.color = eyeWhite;
   }
@@ -199,7 +205,9 @@ export function createFishMesh(type, appearance, growth, quality = 'high') {
     const finColor = new THREE.Color(appearance.fin).multiplyScalar(0.95);
     for (let i = from; i <= to; i += 1) {
       const top = Math.floor(column[i].center + column[i].h / 2);
-      const height = spec.dorsal === 'ridge' ? 1 : (i < from + 2 || i > to - 2 ? 1 : 2);
+      const span = (i - from) / Math.max(1, to - from);
+      const finPeak = spec.dorsal === 'ridge' || spec.dorsal === 'small' ? 1 : Math.max(1, rows * (type.fins.dorsalSize || 0.25) * 0.5 * props.fin);
+      const height = Math.max(1, Math.round(finPeak * Math.sin(Math.PI * (span * 0.8 + 0.1))));
       for (let k = 1; k <= height; k += 1) {
         bodyVoxels.push({ x: i, y: top + k, z: z0 + Math.floor(depth / 2), color: finColor });
       }
@@ -219,8 +227,8 @@ export function createFishMesh(type, appearance, growth, quality = 'high') {
 
   // 尾鳍：按鱼种形状在尾柄后铺方块（薄板）
   const tailColor = new THREE.Color(appearance.fin);
-  const tailLen = { veil: 4, fan: 3, round: 2, fork: 3, lance: 3, spade: 2 }[spec.tail] || 3;
-  const tailRows = Math.max(3, Math.round(rows * 0.62));
+  const tailLen = Math.max(2, Math.round(({ veil: 5, fan: 4, round: 3, fork: 4, lance: 4, spade: 3 }[spec.tail] || 4) * props.fin));
+  const tailRows = Math.max(3, Math.round(rows * (0.55 + (type.fins.tailSize || 0.3) * 0.45) * props.fin));
   for (let i = 1; i <= tailLen; i += 1) {
     const spread = i / tailLen;
     // 从尾柄向外张开，但不是一整块方板
@@ -244,8 +252,8 @@ export function createFishMesh(type, appearance, growth, quality = 'high') {
   const vs = 1 / cols;   // 归一化：整条鱼长度 = 1，交给视图层按鱼型体长缩放
   const offsetX = -(cols * vs) / 2;
   // 身体以中心为原点；尾巴以尾柄为原点（便于绕尾柄转动）
-  const bodyGeo = meshVoxels(bodyVoxels, { x: cols / 2, y: 0, z: 0 }, { voxel: vs });
-  const tailGeo = meshVoxels(tailVoxels, { x: tailStart, y: 0, z: 0 }, { voxel: vs });
+  const bodyGeo = meshVoxels(bodyVoxels, { x: cols / 2, y: rows / 2, z: 0.5 }, { voxel: vs });
+  const tailGeo = meshVoxels(tailVoxels, { x: tailStart, y: rows / 2, z: 0.5 }, { voxel: vs });
 
   const material = new THREE.MeshStandardMaterial({
     vertexColors: true,
@@ -262,6 +270,7 @@ export function createFishMesh(type, appearance, growth, quality = 'high') {
   const tailPivot = new THREE.Group();
   tailPivot.position.set(tailStart * vs + offsetX, 0, 0);
   const tailMesh = new THREE.Mesh(tailGeo, material);
+  tailMesh.castShadow = quality === 'high';
   tailPivot.add(tailMesh);
   group.add(tailPivot);
 
@@ -271,12 +280,13 @@ export function createFishMesh(type, appearance, growth, quality = 'high') {
   for (let x = 0; x < 2; x += 1) {
     pectoralVoxels.push({ x, y: 0, z: 0, color: new THREE.Color(finColor).multiplyScalar(0.92 + x * 0.05) });
   }
-  const pectoralGeo = meshVoxels(pectoralVoxels, { x: 0, y: 0, z: 0 }, { voxel: vs });
+  const pectoralGeo = meshVoxels(pectoralVoxels, { x: 0, y: 0.5, z: 0.5 }, { voxel: vs });
   const pectoralL = new THREE.Mesh(pectoralGeo, material);
   const pectoralR = new THREE.Mesh(pectoralGeo, material);
   const gillCol = Math.round(cols * 0.7);
   const gillY = -vs * 0.4;
-  const gillZ = (z0 + depth - 0.65) * vs;   // 稍微压进体侧，看起来是长在身上的鳍
+  const gillZ = Math.max(0.65, (depth * Math.sqrt(sampleCurve(PROFILE.w, gillCol / (cols - 1))) - 1) / 2) * vs;
+  pectoralL.castShadow = pectoralR.castShadow = quality === 'high';
   pectoralL.position.set(gillCol * vs + offsetX, gillY, gillZ);
   pectoralL.rotation.set(0.15, -0.7, -0.2);
   pectoralR.position.set(gillCol * vs + offsetX, gillY, -gillZ);

@@ -171,7 +171,7 @@ async function main() {
   console.log(`预览 ${preview.url} · 假后端 ${fakeServer.url} · _headers 规则 ${preview.rules.length} 条`);
 
   // 2) 每轮独立 profile 与由浏览器分配的端口，避免两轮测试互相删除文件或连接到旧进程。
-  chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--hide-scrollbars', '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader',
+  chrome = spawn(CHROME, ['--headless=new', '--mute-audio', '--disable-gpu', '--hide-scrollbars', '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader',
     ...(process.env.MOFISH_CHROME_NO_SANDBOX === '1' ? ['--no-sandbox'] : []),
     // 自动化下必须关掉后台节流，否则隐藏页面的 setTimeout（去抖写入）会被推迟到 3 秒以上，
     // 让「等待去抖窗口」的断言变成随机失败。
@@ -648,6 +648,33 @@ async function main() {
   check('窄屏工具条位于画面下方，不遮住当前造景', await devicePhaseB.evaluate(`document.getElementById('decor-float').getBoundingClientRect().top >= document.getElementById('tank').getBoundingClientRect().bottom`));
   await devicePhaseB.click('#float-cancel');
   await devicePhaseB.setViewport(1440, 900, false);
+
+  // 放置取消/退出与纯动画互动的回归：不让临时物件通过撤销复活。
+  await devicePhaseB.click('#add-rock');
+  const canceledDecorId = await devicePhaseB.evaluate('window.__mofish.selectedDecor');
+  await devicePhaseB.click('#decor-float [data-decor-action="rotate"]');
+  await devicePhaseB.click('#float-cancel');
+  await devicePhaseB.click('#decor-undo');
+  check('取消后撤销不会复活待放置物件', await devicePhaseB.evaluate(`!window.__mofish.state.decor.some(d=>d.id===${JSON.stringify(canceledDecorId)})`));
+  await devicePhaseB.click('#add-plant');
+  const retainedDecorId = await devicePhaseB.evaluate('window.__mofish.selectedDecor');
+  await devicePhaseB.click('#mode-view');
+  check('离开布景会确认并保存当前位置', await devicePhaseB.evaluate(`window.__mofish.editMode==='view' && JSON.parse(localStorage.getItem('mofish.v1')).decor.some(d=>d.id===${JSON.stringify(retainedDecorId)})`));
+  const beforePlay = await devicePhaseB.evaluate('JSON.stringify(window.__mofish.state.fish)');
+  await devicePhaseB.click('#play-mode');
+  check('逗鱼按钮与实际互动模式同步', await devicePhaseB.evaluate(`window.__mofish.playMode && document.getElementById('play-mode').getAttribute('aria-pressed')==='true'`));
+  const tankBox = await devicePhaseB.box('#tank');
+  await devicePhaseB.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:tankBox.x,y:tankBox.y});
+  await sleep(700);
+  check('鼠标移动启动跟手互动', await devicePhaseB.evaluate('window.__mofish.motionInfo.lureActive'));
+  check('逗鱼不生成食物或修改鱼的持久状态', await devicePhaseB.evaluate(`window.__mofish.motionInfo.foodCount===0 && JSON.stringify(window.__mofish.state.fish)===${JSON.stringify(beforePlay)}`));
+  await devicePhaseB.click('#mode-decor');
+  check('进入布景会关闭逗鱼且恢复按钮状态', await devicePhaseB.evaluate(`!window.__mofish.playMode && document.getElementById('play-mode').getAttribute('aria-pressed')==='false'`));
+  await devicePhaseB.click('#mode-view');
+  await devicePhaseB.click('#sound');
+  check('水声可由真实按钮点击启用',await devicePhaseB.evaluate(`window.__mofish.state.sound && document.getElementById('sound').getAttribute('aria-pressed')==='true'`));
+  await devicePhaseB.click('#sound');
+  check('关闭水声会恢复关闭状态',await devicePhaseB.evaluate(`!window.__mofish.state.sound && document.getElementById('sound').getAttribute('aria-pressed')==='false'`));
 
   // 2D 降级与画质
   await devicePhaseB.click('#toggle-2d');

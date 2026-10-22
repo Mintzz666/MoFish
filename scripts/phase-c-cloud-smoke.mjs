@@ -13,7 +13,9 @@ const env=phaseCEnvironment(process.env);checkPhaseCTarget(env.MOFISH_SUPABASE_U
 if(process.argv.slice(2).some(arg=>arg!=='--only-c'))throw Error('仅支持 --only-c（定向复查，不重复 B 回归）');
 const key=env.MOFISH_SMOKE_SERVICE_ROLE_KEY,url=env.MOFISH_SUPABASE_URL,anonKey=env.MOFISH_SUPABASE_ANON_KEY;
 if(!key||key.startsWith('sb_secret_')||!anonKey)throw Error('需要本机独立 C 配置及 Legacy service_role；不要把秘密发到聊天。');
-const logDir=new URL('../.local/phase-c-20261019/',import.meta.url);await mkdir(logDir,{recursive:true});
+const artifactName=process.env.MOFISH_QA_RUN_NAME||`phase-c-${new Date().toISOString().replace(/[:.]/g,'-')}`;
+if(!/^[a-zA-Z0-9_-]+$/.test(artifactName))throw Error('QA artifact name must be a local folder name');
+const logDir=new URL(`../.local/${artifactName}/`,import.meta.url);await mkdir(logDir,{recursive:true,mode:0o700});
 const owned=[],clients=[],engines=[],checks=[];let runFailed=false;
 function check(name,ok){checks.push({name,ok:Boolean(ok)});console.log(`${ok?'PASS':'FAIL'}: ${name}`);if(!ok)throw Error('检查失败：'+name);}
 function memory(){const map=new Map();return {getItem:k=>map.get(k)||null,setItem:(k,v)=>map.set(k,String(v)),removeItem:k=>map.delete(k),key:i=>[...map.keys()][i],get length(){return map.size;}};}

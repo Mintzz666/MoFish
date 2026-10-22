@@ -133,6 +133,7 @@ function createView(kind) {
       canvas,
       night: state.night,
       reduceMotion,
+      canFeed: canEditAquarium,
       onPickFish: (id) => selectFish(id),
       onEat: (fishId) => handleEat(fishId),
       onFeed: () => showTip('小鱼正在赶来，今天也有好好吃饭。')
@@ -143,6 +144,7 @@ function createView(kind) {
     quality,
     night: state.night,
     reduceMotion,
+    canFeed: canEditAquarium,
     onEat: (fishId) => handleEat(fishId),
     onPickFish: (id) => selectFish(id),
     onPickDecor: (id) => { if (id) selectDecor(id); },
@@ -204,14 +206,22 @@ function updateRendererChrome() {
   $('mode-decor').disabled = is2d;
   $('camera-reset').disabled = is2d;
   $('quality').disabled = is2d;
+  $('play-mode').disabled = is2d;
+  $('play-mode').setAttribute('aria-pressed', String(Boolean(view?.playMode)));
 }
 
 function applyEditMode(next) {
+  // 离开布景视作确认当前位置；换身份时旧id不在当前state中，绝不能写回旧物件。
+  if (next === 'view' && pendingDecorId && state.decor.some(item => item.id === pendingDecorId) && canEditAquarium()) {
+    pendingDecorId = null;
+    save();
+  }
   editMode = next;
   $('aquarium').dataset.mode = next;
   $('mode-view').setAttribute('aria-selected', String(next === 'view'));
   $('mode-decor').setAttribute('aria-selected', String(next === 'decor'));
   view?.setMode?.(next);
+  $('play-mode').setAttribute('aria-pressed', String(Boolean(view?.playMode)));
   if (next === 'view') {
     selectedDecorId = null;
     pendingDecorId = null;
@@ -220,7 +230,7 @@ function applyEditMode(next) {
   $('decor-panel').classList.toggle('editing', next === 'decor');
   showTip(next === 'decor'
     ? '点选水草、石头或沉木；拖动换位置，松手即保存。'
-    : '轻触水面就能投食；点一条鱼看看它多大了。');
+    : '轻触水面喂食，点小鱼打招呼；打开「逗鱼」可跟随手指或鼠标。');
   refreshPanels();
 }
 
@@ -396,8 +406,11 @@ function restoreFromUndo() {
 }
 
 function selectDecor(id) {
+  if (!canEditAquarium()) return;
+  if (pendingDecorId && pendingDecorId !== id) confirmPendingDecor();
   selectedDecorId = id;
-  pendingDecorId = null;
+  if (pendingDecorId !== id) pendingDecorId = null;
+  applyEditMode('decor');
   view?.selectDecor?.(id);
   refreshDecorPanel();
 }
@@ -405,6 +418,7 @@ function selectDecor(id) {
 function addDecorObject(kind) {
   if (!canEditAquarium()) return;
   if (viewMode === '2d') { toast('布景编辑需要 3D 模式，请先切回 3D。'); return; }
+  if (pendingDecorId) confirmPendingDecor();
   const types = KIND_META[kind].types;
   const type = types[Math.floor(Math.random() * types.length)];
   try {
@@ -501,6 +515,7 @@ function cancelPendingDecor() {
   if (!pendingDecorId) return;
   const id = pendingDecorId;
   const { state: next } = removeDecor(state, id);
+  undoStack.discardObject(id, next);
   pendingDecorId = null;
   selectedDecorId = null;
   view?.selectDecor?.(null);
@@ -587,7 +602,7 @@ function refreshFishList() {
     bar.append(fill);
     card.append(name, detail, bar);
     card.setAttribute('aria-label', `查看 ${fish.name} 的信息`);
-    card.onclick = () => selectFish(fish.id);
+    card.onclick = () => { selectFish(fish.id); view?.greetFish?.(fish.id); };
     list.append(card);
   });
 }
@@ -740,6 +755,13 @@ $('quality').onchange = (event) => {
   toast(quality === 'high' ? '已切到高画质（阴影与焦散）。' : '已切到低画质，优先保证流畅。');
 };
 $('mode-view').onclick = () => applyEditMode('view');
+$('play-mode').onclick = () => {
+  if (viewMode !== '3d') return;
+  applyEditMode('view');
+  const enabled = view?.setPlayMode?.(!view?.playMode);
+  $('play-mode').setAttribute('aria-pressed', String(Boolean(enabled)));
+  showTip(enabled ? '移动鼠标或按住水面轻轻滑动，小鱼会慢慢跟过来。' : '轻触水面喂食，点小鱼打招呼。');
+};
 $('mode-decor').onclick = () => {
   if (!canEditAquarium()) return;
   if (viewMode === '2d') { toast('布景编辑需要 3D 模式。'); return; }
@@ -1030,5 +1052,8 @@ window.__mofish = {
     return state.decor.reduce((acc, d) => { acc[d.kind] = (acc[d.kind] || 0) + 1; return acc; }, {});
   },
   get bootMs() { return Math.round(bootAt); },
-  get renderInfo() { return view?.rendererInfo || null; }
+  get renderInfo() { return view?.rendererInfo || null; },
+  get playMode() { return Boolean(view?.playMode); },
+  get motionInfo() { return view?.motionInfo || null; },
+  get resourceInfo() { return view?.resourceInfo || null; }
 };

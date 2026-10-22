@@ -10,6 +10,7 @@ import { createFishMesh, disposeFish } from './fish.js';
 import { createDecorMesh, disposeDecor } from './decor.js';
 import { FISH_TYPE_BY_ID, DECOR_KINDS } from '../catalog.js';
 import { fishAppearance, decorAppearance, fishSizeFactor, stageOf } from '../model.js';
+import { damp, mixHeading, smoothstep, stepHeading } from './motion.js';
 
 const FISH_RADIUS = 0.22;
 const EAT_RADIUS = 0.12;
@@ -33,7 +34,8 @@ export function createView3D({
   onDecorCommit = () => {},
   onError = () => {},
   onFeed = () => {},
-  reduceMotion = false
+  reduceMotion = false,
+  canFeed = () => true
 }) {
   let qualityKey = QUALITY[quality] ? quality : 'high';
   let scene3d = null;
@@ -51,6 +53,10 @@ export function createView3D({
   let selectionRing = null;
   let highlightedNode = null;
   let mode = 'view';            // 'view' | 'decor'
+  let playMode = false;
+  let playPoint = null;
+  let playPointerActive = false;
+  let playTouchPointerId = null;
   let foodMesh = null;
   let foodDummy = new THREE.Object3D();
   let animationHandle = null;
@@ -67,7 +73,7 @@ export function createView3D({
 
   // ---------------------------------------------------------------- 初始化
   function init() {
-    scene3d = createTankScene({ canvas, quality: qualityKey });
+    scene3d = createTankScene({ canvas, quality: qualityKey, reduceMotion });
     scene3d.setNight(nightTarget ? 1 : 0);
     scene3d.resize(canvas.clientWidth || 800, canvas.clientHeight || 480);
 
@@ -135,6 +141,8 @@ export function createView3D({
       agent.appearance = appearance;
       const scale = type.body.len * fishSizeFactor(fish.growth) * appearance.lenScale * 1.2;
       agent.group.scale.setScalar(scale);
+      if (agent.visualScale == null) agent.visualScale = scale;
+      agent.visualScale = scale;
       agent.baseSpeed = type.motion.speed * 0.75 * appearance.tempo;
       agent.turnRate = type.motion.turn;
       agent.wag = type.motion.wag;
@@ -169,6 +177,10 @@ export function createView3D({
       y: group.position.y, phase: appearance.phase, index,
       baseSpeed: 0.4, turnRate: 1.5, wag: 0.6, freq: 2, depthBias: 0.5, bob: 0.06,
       wander: Math.random() * 100, bobPhase: Math.random() * TAU,
+      cruise: null, cruiseFrom: null, cruiseTo: null, cruiseAge: 0,
+      cruiseDuration: 7 + Math.random() * 3, cruiseBlendAge: 0, cruiseBlendDuration: 1.5,
+      playWeight: 0, glide: 0, nextGlideAt: 11 + Math.random() * 12, glideUntil: 0,
+      greetAt: -Infinity, visualScale: null,
       tailPivot: group.userData.tailPivot
     };
     return agent;
@@ -286,6 +298,12 @@ export function createView3D({
 
   // ---------------------------------------------------------------- 食物
   function spawnFood(x, z, count = 5) {
+    if (canFeed() === false) return false;
+    addFood(x, z, count);
+    return true;
+  }
+
+  function addFood(x, z, count) {
     for (let i = 0; i < count; i += 1) {
       if (foods.length >= MAX_FOOD) foods.shift();
       foods.push({
@@ -320,8 +338,17 @@ export function createView3D({
 
   // ---------------------------------------------------------------- 游动
   function updateFish(dt, time) {
-    const speedScale = reduceMotion ? 0.55 : 1;
+    const speedScale = reduceMotion ? 0.78 : 1;
     const list = [...agents.values()];
+    const playTargets = new Set();
+    if (playMode && mode === 'view' && playPointerActive && playPoint && list.length) {
+      list
+        .map((agent) => ({ agent, distance: (agent.group.position.x - playPoint.x) ** 2 + (agent.group.position.z - playPoint.z) ** 2 }))
+        .sort((a, b) => a.distance - b.distance)
+        .slice(0, 3)
+        .forEach(({ agent }) => playTargets.add(agent.id));
+    }
+
     for (const agent of list) {
       const fish = agent.fish;
       if (!fish) continue;
@@ -332,13 +359,40 @@ export function createView3D({
       const minY = 0.26;
       const maxY = TANK.waterY - 0.2;
 
-      // 目标：水面食物优先，其次漫游
-      let target = null;
+      // 漫游目标缓慢换向：持续数秒横穿水域，随后在旧航向上平滑接入新目标。
+      const reachedCruise = agent.cruiseTo && agent.cruiseBlendAge >= agent.cruiseBlendDuration && Math.hypot(agent.cruiseTo.x - pos.x, agent.cruiseTo.z - pos.z) < 0.38;
+      if (!agent.cruiseTo || agent.cruiseAge >= agent.cruiseDuration || reachedCruise) {
+        const side = pos.x >= 0 ? -1 : 1;
+        const from = agent.cruise ? { ...agent.cruise } : { x: pos.x, y: pos.y, z: pos.z };
+        const to = {
+          x: side * maxX * (0.62 + Math.random() * 0.27),
+          z: clamp(pos.z + (Math.random() - 0.5) * maxZ * 0.9, -maxZ * 0.82, maxZ * 0.82),
+          y: clamp(0.26 + agent.depthBias * (maxY - 0.4) + (Math.random() - 0.5) * 0.2, minY + 0.06, maxY - 0.06)
+        };
+        agent.cruiseFrom = from;
+        agent.cruiseTo = to;
+        agent.cruiseAge = 0;
+        agent.cruiseDuration = 7 + Math.random() * 3.5;
+        agent.cruiseBlendAge = 0;
+        agent.cruiseBlendDuration = 1.5 + Math.random() * 1.1;
+      }
+      agent.cruiseAge += dt;
+      agent.cruiseBlendAge += dt;
+      const cruiseBlend = smoothstep(agent.cruiseBlendAge / agent.cruiseBlendDuration);
+      agent.cruise = {
+        x: agent.cruiseFrom.x + (agent.cruiseTo.x - agent.cruiseFrom.x) * cruiseBlend,
+        y: agent.cruiseFrom.y + (agent.cruiseTo.y - agent.cruiseFrom.y) * cruiseBlend,
+        z: agent.cruiseFrom.z + (agent.cruiseTo.z - agent.cruiseFrom.z) * cruiseBlend
+      };
+
+      // 目标：水面食物优先，其次玩家逗鱼，再回到漫游航线。
+      let nearestFood = null;
       let best = Infinity;
       for (const food of foods) {
         const d = (food.x - pos.x) ** 2 + (food.y - pos.y) ** 2 + (food.z - pos.z) ** 2;
-        if (d < best) { best = d; target = food; }
+        if (d < best) { best = d; nearestFood = food; }
       }
+      const target = best < 32 ? nearestFood : null;
       let desired;
       let targetSpeed = agent.baseSpeed;
       if (target && best < 32) {   // 整缸范围内的食物都会被注意到（约 5.6 个世界单位）
@@ -353,19 +407,29 @@ export function createView3D({
         }
       } else {
         agent.wander += dt * (0.42 + (type.motion.speed || 0.4) * 0.2);
-        if (!agent.cruise || agent.cruiseAge > 6 || Math.hypot(agent.cruise.x - pos.x, agent.cruise.z - pos.z) < 0.35) {
-          // 优先挑对侧的水域，让鱼以「横着游过鱼缸」为主（正面/背面朝相机时鱼会显得很薄）。
-          const side = pos.x > 0 ? -1 : 1;
-          agent.cruise = {
-            x: side * (1.1 + Math.random() * 0.8),
-            z: clamp(pos.z + (Math.random() - 0.5) * 0.5, -(TANK.depth / 2 - 0.35), TANK.depth / 2 - 0.35),
-            y: 0.26 + agent.depthBias * (TANK.waterY - 0.55) + (Math.random() - 0.5) * 0.22
-          };
-          agent.cruiseAge = 0;
-        }
-        agent.cruiseAge = (agent.cruiseAge || 0) + dt;
         desired = Math.atan2(agent.cruise.z - pos.z, agent.cruise.x - pos.x);
         targetSpeed = agent.baseSpeed * (0.85 + 0.22 * Math.sin(time * 0.23 + agent.phase));
+        agent.playWeight = damp(agent.playWeight, playTargets.has(agent.id) ? 1 : 0, 2.2, dt);
+        if (agent.playWeight > 0.005 && playPoint) {
+          const dx = playPoint.x - pos.x;
+          const dz = playPoint.z - pos.z;
+          const distance = Math.hypot(dx, dz);
+          const influence = agent.playWeight * smoothstep(distance / 0.38);
+          desired = mixHeading(desired, Math.atan2(dz, dx), influence);
+          targetSpeed *= 0.35 + 0.65 * smoothstep(distance / 1.2);
+        }
+      }
+      if (target) {
+        agent.playWeight = damp(agent.playWeight, 0, 2.2, dt);
+        agent.glide = damp(agent.glide, 0, 3.2, dt);
+      } else {
+        // 偶尔滑行一小段，给持续游动留出自然的节奏；追食期间不降低赶食速度。
+        if (time >= agent.nextGlideAt) {
+          agent.glideUntil = time + 0.55 + Math.random() * 0.55;
+          agent.nextGlideAt = agent.glideUntil + 11 + Math.random() * 14;
+        }
+        agent.glide = damp(agent.glide, time < agent.glideUntil ? 1 : 0, 3.2, dt);
+        targetSpeed *= 1 - agent.glide * 0.72;
       }
 
       // 边界：越过安全区就把目标方向拉回缸内
@@ -405,24 +469,23 @@ export function createView3D({
         if (Math.abs(dy) < 0.06 && dist < 0.05) pos.y += 0.004;
       }
 
-      const diff = Math.atan2(Math.sin(desired - agent.heading), Math.cos(desired - agent.heading));
-      const maxTurn = agent.turnRate * dt * (reduceMotion ? 0.7 : 1);
-      const turn = clamp(diff, -maxTurn, maxTurn);
-      agent.heading += turn;
-      agent.bend += ((clamp(turn / Math.max(dt, 0.001) / 4, -1, 1)) - agent.bend) * Math.min(1, dt * 4);
-      agent.speed += (targetSpeed * speedScale - agent.speed) * Math.min(1, dt * 1.6);
+      const previousHeading = agent.heading;
+      agent.heading = stepHeading(agent.heading, desired, agent.turnRate * (reduceMotion ? 0.88 : 1), dt);
+      const turn = Math.atan2(Math.sin(agent.heading - previousHeading), Math.cos(agent.heading - previousHeading));
+      agent.bend = damp(agent.bend, clamp(turn / Math.max(dt, 0.001) / 4, -1, 1), 4, dt);
+      agent.speed = damp(agent.speed, targetSpeed * speedScale, 1.6, dt);
 
       pos.x += Math.cos(agent.heading) * agent.speed * dt;
       pos.z += Math.sin(agent.heading) * agent.speed * dt;
 
       // 垂直方向：偏好水层 + 轻微起伏；追食时朝食物高度靠拢
       const preferredY = clamp(
-        (agent.cruise ? agent.cruise.y : 0.24 + agent.depthBias * (maxY - 0.24)) + Math.sin(time * 0.5 + agent.bobPhase) * agent.bob,
+        (agent.cruise ? agent.cruise.y : 0.24 + agent.depthBias * (maxY - 0.24)) + Math.sin(time * 0.5 + agent.bobPhase) * agent.bob * (reduceMotion ? 0.72 : 1),
         minY,
         maxY
       );
       const wantY = target ? target.y : preferredY;
-      pos.y += (wantY - pos.y) * Math.min(1, dt * 0.9);
+      pos.y = damp(pos.y, wantY, 0.9, dt);
 
       pos.x = clamp(pos.x, -maxX, maxX);
       pos.z = clamp(pos.z, -maxZ, maxZ);
@@ -432,18 +495,23 @@ export function createView3D({
 
       // 姿态：模型朝 +X，heading 是 XZ 平面角度 → 绕 Y 取反
       agent.group.rotation.y = -agent.heading;
-      agent.group.rotation.z = clamp(-(wantY - pos.y) * 0.9, -0.1, 0.1);
-      agent.group.rotation.x = Math.sin(time * 0.4 + agent.phase) * 0.025;
+      const greetElapsed = time - agent.greetAt;
+      const greetPulse = greetElapsed >= 0 && greetElapsed < 1.45 ? Math.sin(Math.PI * clamp(greetElapsed / 1.45, 0, 1)) : 0;
+      agent.group.rotation.z = clamp(-(wantY - pos.y) * 0.65 + greetPulse * 0.13, -0.1, 0.18);
+      agent.group.rotation.x = Math.sin(time * 0.4 + agent.phase) * 0.022 + agent.bend * 0.12;
+      const breath = Math.sin(time * 1.65 + agent.phase) * 0.006;
+      const visualScale = agent.visualScale || agent.group.scale.x;
+      agent.group.scale.set(visualScale * (1 + breath), visualScale * (1 - breath * 0.35), visualScale * (1 + breath));
 
       // 体素鱼的尾巴是独立刚体：绕尾柄左右摆，速度越快摆得越勤、幅度越大
       if (agent.tailPivot) {
         const speedRatio = clamp(agent.speed / Math.max(0.12, agent.baseSpeed * 1.6), 0, 1.6);
-        const wag = agent.group.userData.wagAmp * (0.55 + 0.45 * speedRatio) * (reduceMotion ? 0.6 : 1);
+        const wag = agent.group.userData.wagAmp * (0.55 + 0.45 * speedRatio) * (reduceMotion ? 0.8 : 1);
         const freq = agent.group.userData.wagFreq * (0.7 + 0.5 * speedRatio);
-        agent.tailPivot.rotation.y = Math.sin(time * freq + (agent.group.userData.wagPhase || 0)) * wag + agent.bend * 0.25;
+        agent.tailPivot.rotation.y = Math.sin(time * freq + (agent.group.userData.wagPhase || 0)) * wag + agent.bend * 0.25 + Math.sin(time * 12 + agent.phase) * greetPulse * 0.2;
       }
       // 胸鳍小幅划水
-      const flap = Math.sin(time * (1.6 + agent.freq * 0.4) + agent.phase) * 0.45;
+      const flap = Math.sin(time * (1.6 + agent.freq * 0.4) + agent.phase) * (0.45 + greetPulse * 0.1);
       const ud = agent.group.userData;
       if (ud.pectoralL) {
         ud.pectoralL.rotation.y = -0.5 + flap * 0.5;
@@ -501,8 +569,26 @@ export function createView3D({
   // ---------------------------------------------------------------- 指针交互
   function setMode(next) {
     mode = next === 'decor' ? 'decor' : 'view';
+    if (mode !== 'view') setPlayMode(false);
     canvas.style.cursor = mode === 'decor' ? 'grab' : 'default';
     if (mode === 'view') selectDecor(null);
+  }
+
+  function setPlayMode(enabled) {
+    playMode = Boolean(enabled) && mode === 'view';
+    if (!playMode) {
+      playPointerActive = false;
+      playTouchPointerId = null;
+    }
+    return playMode;
+  }
+
+  function greetFish(id) {
+    const agent = agents.get(id);
+    if (!agent) return false;
+    agent.greetAt = clock.time;
+    scene3d?.addRipple?.(agent.group.position.x, agent.group.position.z, 0.26);
+    return true;
   }
 
   function getPointer(event) {
@@ -516,6 +602,17 @@ export function createView3D({
     pointer.set((px / rect.width) * 2 - 1, -(py / rect.height) * 2 + 1);
     raycaster.setFromCamera(pointer, scene3d.camera);
     return raycaster.ray.intersectPlane(floorPlane, new THREE.Vector3());
+  }
+
+  function updatePlayPointer(event, p = getPointer(event)) {
+    if (!playMode || mode !== 'view' || !scene3d) return;
+    if (event.pointerType === 'touch' && playTouchPointerId !== event.pointerId) return;
+    const point = floorAt(p.x, p.y, p);
+    if (!point) return;
+    const maxX = TANK.width / 2 - 0.22;
+    const maxZ = TANK.depth / 2 - 0.18;
+    playPoint = { x: clamp(point.x, -maxX, maxX), z: clamp(point.z, -maxZ, maxZ) };
+    playPointerActive = true;
   }
 
   function pickAt(px, py, rect) {
@@ -553,6 +650,10 @@ export function createView3D({
       canvas.focus?.();
       pointers.set(event.pointerId, getPointer(event));
       canvas.setPointerCapture?.(event.pointerId);
+      if (playMode && mode === 'view') {
+        if (event.pointerType === 'touch') playTouchPointerId = event.pointerId;
+        updatePlayPointer(event);
+      }
       if (pointers.size === 2) {
         const [a, b] = [...pointers.values()];
         lastPinch = Math.hypot(a.x - b.x, a.y - b.y);
@@ -569,18 +670,21 @@ export function createView3D({
         lastX: event.clientX, lastY: event.clientY,
         moved: 0,
         hit,
+        pointerType: event.pointerType,
         dragging: false,
         mode,
         anchor: decorNode && floorStart ? { x: decorNode.group.position.x - floorStart.x, z: decorNode.group.position.z - floorStart.z } : { x: 0, z: 0 }
       };
       if (mode === 'decor' && hit?.kind === 'decor') {
         selectDecor(hit.id);
+        onPickDecor(hit.id);
         canvas.style.cursor = 'grabbing';
       }
     });
 
     canvas.addEventListener('pointermove', (event) => {
       if (pointers.has(event.pointerId)) pointers.set(event.pointerId, getPointer(event));
+      if (playMode && mode === 'view') updatePlayPointer(event);
       if (pointers.size === 2) {
         const [a, b] = [...pointers.values()];
         const dist = Math.hypot(a.x - b.x, a.y - b.y);
@@ -595,6 +699,9 @@ export function createView3D({
       dragState.lastY = event.clientY;
       dragState.moved += Math.abs(dx) + Math.abs(dy);
       if (!dragState.dragging && dragState.moved > 6) dragState.dragging = true;
+
+      // 触屏逗鱼时，手指沿缸面滑动来引导小鱼；不同时把同一手势解释为转相机。
+      if (mode === 'view' && playMode) return;
 
       if (mode === 'decor' && dragState.hit?.kind === 'decor' && dragState.dragging) {
         const rect = canvas.getBoundingClientRect();
@@ -616,6 +723,10 @@ export function createView3D({
     const finish = (event) => {
       pointers.delete(event.pointerId);
       if (pointers.size < 2) lastPinch = 0;
+      if (playTouchPointerId === event.pointerId) {
+        playTouchPointerId = null;
+        playPointerActive = false;
+      }
       if (!dragState || dragState.pointerId !== event.pointerId) return;
       const stateSnapshot = dragState;
       dragState = null;
@@ -630,17 +741,22 @@ export function createView3D({
         return;
       }
       const moved = stateSnapshot.moved > 6;
+      if (event.type === 'pointercancel') return;
       if (moved) return;
       const hit = stateSnapshot.hit;
       if (!hit) return;
-      if (hit.kind === 'fish') onPickFish(hit.id);
+      if (hit.kind === 'fish') {
+        greetFish(hit.id);
+        onPickFish(hit.id);
+      }
       else if (hit.kind === 'decor') {
         if (mode === 'decor') selectDecor(hit.id);
         else onPickDecor(hit.id);
       } else if (hit.kind === 'water') {
         if (mode === 'view') {
-          spawnFood(hit.point.x, hit.point.z, 5);
-          onFeed({ x: hit.point.x, z: hit.point.z, source: 'tap' });
+          scene3d?.addRipple?.(hit.point.x, hit.point.z, 0.52);
+          if (playMode) return;
+          if (spawnFood(hit.point.x, hit.point.z, 5)) onFeed({ x: hit.point.x, z: hit.point.z, source: 'tap' });
         } else {
           selectDecor(null);
           onPickDecor(null);
@@ -650,6 +766,8 @@ export function createView3D({
     canvas.addEventListener('pointerup', finish);
     canvas.addEventListener('pointercancel', finish);
     canvas.addEventListener('pointerleave', (event) => {
+      playPointerActive = false;
+      if (playTouchPointerId === event.pointerId) playTouchPointerId = null;
       if (dragState && dragState.pointerId === event.pointerId && dragState.dragging) finish(event);
     });
 
@@ -681,17 +799,22 @@ export function createView3D({
         }
       } else if ((event.key === ' ' || event.code === 'Space') && mode === 'view') {
         event.preventDefault();
-        spawnFood(0, 0, 6);
-        onFeed({ x: 0, z: 0, source: 'keyboard' });
+        if (spawnFood(0, 0, 6)) {
+          scene3d?.addRipple?.(0, 0, 0.5);
+          onFeed({ x: 0, z: 0, source: 'keyboard' });
+        }
       }
     });
   }
 
   function feedRandom() {
+    if (canFeed() === false) return false;
     const x = (Math.random() - 0.5) * TANK.width * 0.5;
     const z = (Math.random() - 0.5) * TANK.depth * 0.5;
-    spawnFood(x, z, 6);
+    addFood(x, z, 6);
+    scene3d?.addRipple?.(x, z, 0.5);
     onFeed({ x, z, source: 'button' });
+    return true;
   }
 
   // ---------------------------------------------------------------- 生命周期
@@ -741,10 +864,14 @@ export function createView3D({
   canvas.addEventListener('webglcontextlost', onContextLost, false);
 
   return {
-    setState, setMode, setNight, feedRandom, resize, pause, resume, dispose,
+    setState, setMode, setPlayMode, greetFish, setNight, feedRandom, resize, pause, resume, dispose,
     selectDecor, getSelected, nudgeSelected,
     spawnFood,
     get quality() { return currentQuality; },
+    get playMode() { return playMode; },
+    get motionInfo() {
+      return {foodCount: foods.length, lureActive: playPointerActive, fish: [...agents.values()].map(a => ({id:a.id,x:a.group.position.x,y:a.group.position.y,z:a.group.position.z,speed:a.speed,heading:a.heading,greeting:clock.time-a.greetAt<1.8}))};
+    },
     get hasSelection() { return Boolean(selection); },
     get selectionFeedback() {
       const group = highlightedNode?.group;
@@ -755,6 +882,10 @@ export function createView3D({
       };
     },
     get isDisposed() { return disposed; },
-    get rendererInfo() { return scene3d?.renderer?.info?.render || null; }
+    get rendererInfo() { return scene3d?.renderer?.info?.render || null; },
+    get resourceInfo() {
+      const info = scene3d?.renderer?.info;
+      return info ? {geometries:info.memory.geometries,textures:info.memory.textures,drawCalls:info.render.calls,triangles:info.render.triangles} : null;
+    }
   };
 }

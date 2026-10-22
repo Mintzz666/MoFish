@@ -7,12 +7,12 @@ import * as THREE from 'three';
 import { createGlassTank, GLASS_THICKNESS } from './glass.js';
 
 export const TANK = Object.freeze({
-  width: 4.4,
-  height: 2.3,
-  depth: 2.0,
-  waterY: 2.14,
+  width: 4.84,
+  height: 2.53,
+  depth: 2.2,
+  waterY: 2.354,
   sandY: 0,
-  front: 1.0
+  front: 1.1
 });
 
 export function sandHeightAt(x, z) {
@@ -104,9 +104,19 @@ function blobShadowTexture() {
 const WATER_VERT = `
   varying vec3 vWorld;
   varying vec2 vUv;
+  uniform float uTime;
+  uniform float uMotion;
+  uniform vec4 uRipples[8];
   void main() {
     vUv = uv;
     vec4 world = modelMatrix * vec4(position, 1.0);
+    float lift = sin(world.x * 2.5 + uTime * 0.8) * cos(world.z * 2.1 - uTime * 0.6) * 0.006;
+    for (int i = 0; i < 8; i++) {
+      float age = max(0.0, uTime - uRipples[i].z);
+      float d = distance(world.xz, uRipples[i].xy);
+      lift += sin(d * 22.0 - age * 7.0) * exp(-d * 1.5 - age * 1.1) * uRipples[i].w * 0.012;
+    }
+    world.y += lift * uMotion;
     vWorld = world.xyz;
     gl_Position = projectionMatrix * viewMatrix * world;
   }
@@ -120,21 +130,35 @@ const WATER_FRAG = `
   uniform float uNight;
   uniform vec3 uColor;
   uniform vec3 uKeyColor;
+  uniform float uMotion;
+  uniform vec4 uRipples[8];
   void main() {
     vec2 p = vWorld.xz * 1.35;
     float t = uTime;
+    float rippleLight = 0.0;
+    vec2 rippleSlope = vec2(0.0);
+    for (int i = 0; i < 8; i++) {
+      float age = max(0.0, t - uRipples[i].z);
+      vec2 delta = vWorld.xz - uRipples[i].xy;
+      float d = length(delta);
+      float ring = exp(-pow((d - age * 0.46) * 16.0, 2.0)) * exp(-age * 0.85) * uRipples[i].w;
+      rippleLight += ring;
+      rippleSlope += delta / max(0.02, d) * ring * 0.18;
+    }
     vec3 n = normalize(vec3(
       cos(p.x * 2.2 + t * 0.9) * 0.07 + cos((p.x + p.y) * 3.1 - t * 1.3) * 0.04,
       1.0,
       cos(p.y * 2.6 - t * 0.8) * 0.07 + cos((p.x - p.y) * 2.4 + t * 1.1) * 0.04
-    ));
+    ) + vec3(rippleSlope.x, 0.0, rippleSlope.y) * uMotion);
     vec3 V = normalize(cameraPosition - vWorld);
     float fres = pow(1.0 - clamp(dot(V, n), 0.0, 1.0), 2.2);
     vec3 L = normalize(vec3(0.25, 1.0, 0.4));
     float spec = pow(max(dot(reflect(-L, n), V), 0.0), 64.0);
-    vec3 col = mix(uColor, vec3(1.0), fres * 0.32 + spec * 0.35);
+    vec3 reflected = reflect(-V, n);
+    float windowGlow = exp(-pow((reflected.x + reflected.z * 0.3 - 0.25) * 5.0, 2.0)) * smoothstep(0.1, 0.8, reflected.y);
+    vec3 col = mix(uColor, vec3(0.95, 0.99, 1.0), clamp(fres * 0.32 + spec * 0.35 + windowGlow * 0.22 + rippleLight * 0.35, 0.0, 0.8));
     col = mix(col, uKeyColor, 0.18);
-    float alpha = (0.10 + fres * 0.16 + spec * 0.18) * (1.0 - uNight * 0.28);
+    float alpha = (0.08 + fres * 0.16 + spec * 0.18 + windowGlow * 0.08 + rippleLight * 0.18) * (1.0 - uNight * 0.28);
     gl_FragColor = vec4(col, alpha);
   }
 `;
@@ -184,7 +208,7 @@ const SIMPLE_VERT = `
   }
 `;
 
-function makeWaterMaterial() {
+function makeWaterMaterial(reduceMotion) {
   return new THREE.ShaderMaterial({
     vertexShader: WATER_VERT,
     fragmentShader: WATER_FRAG,
@@ -195,7 +219,9 @@ function makeWaterMaterial() {
       uTime: { value: 0 },
       uNight: { value: 0 },
       uColor: { value: DAY.water.clone() },
-      uKeyColor: { value: DAY.key.clone() }
+      uKeyColor: { value: DAY.key.clone() },
+      uMotion: { value: reduceMotion ? 0.12 : 1 },
+      uRipples: { value: Array.from({length: 8}, () => new THREE.Vector4(0, 0, -100, 0)) }
     }
   });
 }
@@ -232,7 +258,7 @@ function makeShaftMaterial() {
  * 建场景。返回的对象由 view3d 持有；dispose() 必须能释放全部 GPU 资源，
  * 因为用户可能在 2D/3D 之间反复切换（要求：切换后内存不能持续上涨）。
  */
-export function createTankScene({ canvas, quality = 'high' }) {
+export function createTankScene({ canvas, quality = 'high', reduceMotion = false }) {
   const settings = QUALITY[quality] || QUALITY.high;
   const renderer = new THREE.WebGLRenderer({
     canvas,
@@ -348,9 +374,9 @@ export function createTankScene({ canvas, quality = 'high' }) {
   }
 
   // 水面
-  const waterGeo = new THREE.PlaneGeometry(TANK.width, TANK.depth, 1, 1);
+  const waterGeo = new THREE.PlaneGeometry(TANK.width, TANK.depth, settings.shadows ? 40 : 16, settings.shadows ? 20 : 8);
   waterGeo.rotateX(-Math.PI / 2);
-  const waterMat = makeWaterMaterial();
+  const waterMat = makeWaterMaterial(reduceMotion);
   const water = new THREE.Mesh(waterGeo, waterMat);
   water.position.set(0, TANK.waterY, 0);
   water.renderOrder = 3;
@@ -419,6 +445,12 @@ export function createTankScene({ canvas, quality = 'high' }) {
   let night = 0;
   let nightTarget = 0;
   let elapsed = 0;
+  let rippleCursor = 0;
+  function addRipple(x, z, strength = 0.8) {
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+    waterMat.uniforms.uRipples.value[rippleCursor].set(x, z, elapsed, Math.max(0, Math.min(1, strength)));
+    rippleCursor = (rippleCursor + 1) % 8;
+  }
   let disposed = false;
 
   function applyCamera() {
@@ -544,7 +576,7 @@ export function createTankScene({ canvas, quality = 'high' }) {
     renderer, scene, camera, tankGroup, sand, glass, water, caustics,
     blobMaterial: blobMat, shadowTexture: shadowTex,
     settings, cameraState,
-    orbit, zoom, resetCamera, resize, update, setNight, dispose,
+    orbit, zoom, resetCamera, resize, update, setNight, dispose, addRipple,
     get elapsed() { return elapsed; },
     get night() { return night; }
   };

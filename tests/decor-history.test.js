@@ -27,3 +27,20 @@ test('退出、换号或重新对账后不能撤销上一身份的布局', () =>
   assert.equal(history.length, 0);
   assert.equal(history.restore(initial()), null);
 });
+
+test('取消新物件会从撤销历史移除它，并保留更早的布局撤销',()=>{
+  const history=createDecorHistory({getScope:()=>1});
+  const before=initial(),placed=cloneState(before);
+  history.push(before);
+  placed.decor[0].rot+=0.4;
+  history.push(placed);
+  const pending=cloneState(placed);
+  pending.decor.push({...pending.decor[0],id:'pending-fixture'});
+  history.push(pending);
+  pending.decor.at(-1).rot+=0.7;
+  history.discardObject('pending-fixture',placed);
+  assert.equal(history.length,1);
+  const restored=history.restore(placed);
+  assert.deepEqual(restored.decor,before.decor);
+  assert.ok(!restored.decor.some(d=>d.id==='pending-fixture'));
+});
