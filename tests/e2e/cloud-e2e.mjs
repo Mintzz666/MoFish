@@ -580,6 +580,7 @@ async function main() {
   await devicePhaseB.click('#add-rock');
   const decorAfter = await devicePhaseB.evaluate('window.__mofish.state.decor.length');
   check('新增造景进入场景并等待确认', decorAfter === decorBefore + 1 && (await devicePhaseB.evaluate('!document.getElementById("decor-pending-actions").hidden')));
+  check('待确认造景的移走按钮与面板同步禁用',await devicePhaseB.evaluate(`document.querySelector('#decor-float [data-decor-action="delete"]').disabled && document.getElementById('decor-delete').disabled`));
   check('新造景立即高亮且只指向当前物件', await devicePhaseB.evaluate(`(()=>{const f=window.__mofish.selectionFeedback;return f.visible && f.id===window.__mofish.state.decor.at(-1).id && f.intensity>0.5;})()`));
   check('造景实际几何底部贴合起伏沙面', await devicePhaseB.evaluate(`(()=>{const f=window.__mofish.selectionFeedback;return Math.abs(f.bottomY-f.sandY)<1e-6;})()`));
   await devicePhaseB.evaluate(`window.scrollTo(0,0);new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);

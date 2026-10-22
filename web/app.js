@@ -673,6 +673,7 @@ function refreshDecorPanel() {
   $('float-confirm').hidden = false;
   $('float-confirm').textContent = isPending ? '放在这里' : '完成布景';
   $('float-cancel').hidden = !isPending;
+  floatBar.querySelector('[data-decor-action="delete"]').disabled = isPending;
   for (const id of ['decor-rotate', 'decor-scale-down', 'decor-scale-up', 'decor-reshuffle', 'decor-delete']) {
     $(id).disabled = isPending && id === 'decor-delete';
   }
