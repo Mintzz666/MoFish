@@ -636,6 +636,36 @@ async function main() {
     initial3dRequests.map(e => e.params.request.url).join(', ') || `监测 ${lazy3dAssets.length} 个 3D 资源`);
   check('顶栏显示 V0.2 测试版', (await deviceA.evaluate(`document.getElementById('app-version').textContent.trim()`)).includes('V0.2'));
 
+  if (process.env.MOFISH_E2E_DIALOG_ESCAPE_ONLY === '1') {
+    await deviceA.click('#more-button');
+    await deviceA.click('#storage-button');
+    const dialogOpened = await deviceA.evaluate(`document.getElementById('storage-dialog').open`);
+    await deviceA.evaluate(`(()=>{
+      window.__escapeAudit=[];
+      document.addEventListener('keydown',e=>{if(e.key==='Escape')window.__escapeAudit.push({phase:'capture',defaultPrevented:e.defaultPrevented,target:e.target?.id||e.target?.tagName});},true);
+      document.addEventListener('keydown',e=>{if(e.key==='Escape')window.__escapeAudit.push({phase:'bubble',defaultPrevented:e.defaultPrevented,target:e.target?.id||e.target?.tagName});});
+      const dialog=document.getElementById('storage-dialog');
+      dialog.addEventListener('cancel',e=>window.__escapeAudit.push({phase:'cancel',defaultPrevented:e.defaultPrevented}));
+      dialog.addEventListener('close',()=>window.__escapeAudit.push({phase:'close'}));
+    })()`);
+    check('从更多菜单打开原生存档对话框',dialogOpened);
+    await deviceA.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27,nativeVirtualKeyCode:27});
+    await deviceA.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27,nativeVirtualKeyCode:27});
+    await sleep(120);
+    const escapeState=await deviceA.evaluate(`(()=>({dialogOpen:document.getElementById('storage-dialog').open,
+      menuOpen:document.getElementById('more-settings').open,activeElement:{id:document.activeElement?.id||'',tag:document.activeElement?.tagName||'',className:String(document.activeElement?.className||'')},
+      audit:window.__escapeAudit}))()`);
+    check('按一次真实 Escape 关闭当前原生对话框',dialogOpened&&!escapeState.dialogOpen,JSON.stringify(escapeState));
+    const focusRestored=escapeState.activeElement.id==='storage-button'
+      || (!escapeState.menuOpen&&escapeState.activeElement.id==='more-button');
+    check('Escape 后焦点返回可见的菜单操作入口',focusRestored,JSON.stringify(escapeState));
+    const failed=results.filter(r=>!r.ok);
+    console.log(`\n=== 原生对话框 Escape 专项：${results.length-failed.length}/${results.length} 通过 ===`);
+    if(failed.length)for(const f of failed)console.log(` - ${f.name}${f.detail?` (${f.detail})`:''}`);
+    writeFileSync(path.join(RUN_DIR,'result.json'),JSON.stringify(results,null,2));
+    return failed.length;
+  }
+
   // 快速专项模式用于单独诊断离屏暂停：滚动空间只存在于本测试页，绝不改产品布局。
   if (process.env.MOFISH_E2E_OFFSCREEN_ONLY === '1') {
     const pausePage = await newContextPage(browserWs, 'E');

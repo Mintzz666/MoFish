@@ -1156,7 +1156,7 @@ $('aquarium').addEventListener('pointermove', event => { if (event.buttons || vi
 $('aquarium').addEventListener('keydown', markInteraction);
 
 document.addEventListener('pointerdown', event => { const menu=$('more-settings'); if(menu?.open && !menu.contains(event.target)) menu.open=false; });
-document.addEventListener('keydown', event => { if(event.key==='Escape' && $('more-settings')?.open) { $('more-settings').open=false; $('more-button').focus(); event.preventDefault(); } });
+document.addEventListener('keydown', event => { if(event.key==='Escape' && $('more-settings')?.open && !document.querySelector('dialog[open]')) { $('more-settings').open=false; $('more-button').focus(); event.preventDefault(); } });
 document.addEventListener('fullscreenchange', applyRuntimeActivity);
 
 function reportBuild() { (navigator.serviceWorker?.controller || serviceWorkerRegistration?.active)?.postMessage({type:'MOFISH_BUILD_STATUS',entry:BUILD_ENTRY}); }
