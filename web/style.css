@@ -283,7 +283,11 @@ main {
 }
 .stage-footer .live-dot { background: #438b73; box-shadow: 0 0 0 4px rgba(67, 139, 115, 0.1); }
 .stage-fallback { opacity: 0.8; }
-.stage-footer .link-button { pointer-events: auto; color: #245d4e; text-decoration: underline; }
+.stage-footer .link-button { pointer-events: auto; color: #245d4e; text-decoration: underline; min-height: 44px; min-width: 44px; }
+.stage:has(#renderer-note:not([hidden])) .stage-tip { bottom: 4.5rem; }
+@media (max-width: 720px) {
+  .stage:has(#renderer-note:not([hidden])) .stage-tip { bottom: 6rem; }
+}
 
 /* ---------------------------------------------------------------- 工具条 */
 .tools {

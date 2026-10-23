@@ -405,6 +405,42 @@ async function setNight(page, night) {
   await waitFor(page, `window.__mofish.state.night === ${JSON.stringify(night)}`);
 }
 
+async function assert2dStageTipLayout(page, name, width, height, mobile) {
+  await page.setViewport(width, height, mobile);
+  await page.evaluate(`(()=>{
+    window.scrollTo(0,0);
+    document.getElementById('retry-3d').scrollIntoView({block:'center'});
+    return new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  })()`);
+  const sample = await page.evaluate(`(()=>{
+    const rect=e=>{const r=e.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height,cx:r.left+r.width/2,cy:r.top+r.height/2};};
+    const el=id=>document.getElementById(id), stage=el('aquarium'), tip=el('tank-tip'), footer=document.querySelector('.stage-footer');
+    const status=el('stage-status'), note=el('renderer-note'), retry=el('retry-3d');
+    const visible=e=>{const s=getComputedStyle(e),r=e.getBoundingClientRect();return !e.hidden&&s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;};
+    const stageRect=rect(stage), tipRect=rect(tip), footerRect=rect(footer), statusRect=rect(status), noteRect=rect(note), retryRect=rect(retry);
+    const inStage=r=>r.left>=stageRect.left-1&&r.right<=stageRect.right+1&&r.top>=stageRect.top-1&&r.bottom<=stageRect.bottom+1;
+    const hit=document.elementFromPoint(retryRect.cx,retryRect.cy);
+    return {renderer:window.__mofish.renderer,viewport:{width:innerWidth,height:innerHeight},stage:stageRect,tip:tipRect,footer:footerRect,
+      status:statusRect,note:noteRect,retry:retryRect,visible:{tip:visible(tip),footer:visible(footer),status:visible(status),note:visible(note),retry:visible(retry)},
+      within:{tip:inStage(tipRect),footer:inStage(footerRect),status:inStage(statusRect),note:inStage(noteRect),retry:inStage(retryRect)},
+      retryDisabled:retry.disabled,retryPointerEvents:getComputedStyle(retry).pointerEvents,retryHasHandler:typeof retry.onclick==='function',
+      retryHit:{id:hit?.id||'',tag:hit?.tagName||'',inside:!!hit&&retry.contains(hit)}};
+  })()`);
+  const ready = sample.renderer === '2d' && Object.values(sample.visible).every(Boolean);
+  check(`${name} 2D 提示、状态与重试入口可见`, ready, JSON.stringify(sample));
+  check(`${name} 2D 提示与底栏至少相隔 4px`, sample.tip.bottom + 4 <= sample.footer.top,
+    `tip.bottom=${sample.tip.bottom.toFixed(1)}, footer.top=${sample.footer.top.toFixed(1)}`);
+  check(`${name} 提示、状态和重试入口位于鱼缸边界内`,
+    sample.within.tip && sample.within.footer && sample.within.status && sample.within.note && sample.within.retry,
+    JSON.stringify({stage:sample.stage,within:sample.within}));
+  check(`${name} 重试 3D 按钮高度至少 44px`, sample.retry.height >= 44,
+    `height=${sample.retry.height.toFixed(1)}px`);
+  check(`${name} 重试 3D 按钮可命中且未禁用`, !sample.retryDisabled && sample.retryPointerEvents !== 'none'
+    && sample.retryHasHandler && sample.retryHit.inside, JSON.stringify({retry:sample.retry,retryDisabled:sample.retryDisabled,
+      retryPointerEvents:sample.retryPointerEvents,retryHasHandler:sample.retryHasHandler,retryHit:sample.retryHit}));
+  return sample;
+}
+
 async function diagnoseMoreMenuDismissal(page, width, height) {
   await page.setViewport(width, height, true);
   await page.evaluate(`(()=>{window.scrollTo(0,0);document.getElementById('more-settings').open=false;})()`);
@@ -699,6 +735,42 @@ async function main() {
     await run2dCanvasRegression(canvas2dPage);
     const failed = results.filter(r => !r.ok);
     console.log(`\n=== 2D Canvas 专项结果：${results.length - failed.length}/${results.length} 通过 ===`);
+    if (failed.length) for (const f of failed) console.log(` - ${f.name}${f.detail ? ` (${f.detail})` : ''}`);
+    writeFileSync(path.join(RUN_DIR, 'result.json'), JSON.stringify(results, null, 2));
+    return failed.length;
+  }
+  if (process.env.MOFISH_E2E_STAGE_TIP_ONLY === '1') {
+    await setRenderer(deviceA, '2d');
+    await setNight(deviceA, false);
+    await waitFor(deviceA, `!document.getElementById('renderer-note').hidden
+      && !document.getElementById('retry-3d').hidden`);
+    const scenarios = [
+      {name:'320x568',width:320,height:568,mobile:true},
+      {name:'390x844',width:390,height:844,mobile:true},
+      {name:'430x932',width:430,height:932,mobile:true},
+      {name:'844x390 横屏',width:844,height:390,mobile:true},
+      {name:'1440x900 桌面',width:1440,height:900,mobile:false}
+    ];
+    for (const scenario of scenarios) {
+      await assert2dStageTipLayout(deviceA, scenario.name, scenario.width, scenario.height, scenario.mobile);
+      if (scenario.width === 390) {
+        await deviceA.click('#retry-3d');
+        const switchedTo3d = await waitFor(deviceA, `window.__mofish.renderer === '3d'`, {timeoutMs:10000,intervalMs:100});
+        check('390px 点击重试 3D 后切换到 3D', Boolean(switchedTo3d),
+          `renderer=${await deviceA.evaluate('window.__mofish.renderer')}`);
+        if (await deviceA.evaluate(`window.__mofish.renderer === '3d'`)) await setRenderer(deviceA, '2d');
+        await deviceA.evaluate(`document.getElementById('more-settings').open=false`);
+        const restoredTo2d = await waitFor(deviceA, `window.__mofish.renderer === '2d'
+          && !document.getElementById('retry-3d').hidden`, {timeoutMs:10000,intervalMs:100});
+        check('390px 重试验证后恢复 2D', Boolean(restoredTo2d),
+          `renderer=${await deviceA.evaluate('window.__mofish.renderer')}`);
+        await assert2dStageTipLayout(deviceA, '390px 3D重试后恢复', 390, 844, true);
+        await deviceA.evaluate('window.scrollTo(0,0);new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+        await deviceA.shot('v02-stage-tip-390-2d.png');
+      }
+    }
+    const failed = results.filter(r => !r.ok);
+    console.log(`\n=== 2D 提示与底栏间距专项：${results.length - failed.length}/${results.length} 通过 ===`);
     if (failed.length) for (const f of failed) console.log(` - ${f.name}${f.detail ? ` (${f.detail})` : ''}`);
     writeFileSync(path.join(RUN_DIR, 'result.json'), JSON.stringify(results, null, 2));
     return failed.length;
