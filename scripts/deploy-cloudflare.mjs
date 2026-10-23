@@ -2,7 +2,7 @@
 import { loadEnvFile } from 'node:process';
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
-import { writeFile } from 'node:fs/promises';
+import { writeFile, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { readCloudConfig } from '../web/cloud/config.js';
 import {checkPhaseCTarget,phaseCEnvironment} from './phase-c-config.mjs';
@@ -63,8 +63,10 @@ if (missing.length) {
       throw new Error('QA 部署要求干净的已提交工作区，以便精确核验源码 SHA。');
     }
     await run(process.execPath, ['build.mjs']);
+    const manifest = JSON.parse(await readFile(new URL('../dist/asset-manifest.json', import.meta.url), 'utf8'));
     if (qa) await writeFile(new URL('../dist/deployment.json', import.meta.url), JSON.stringify({
-      phase: phaseName, worker: workerName, sourceSha, projectRef: sourceEnv.MOFISH_SMOKE_EXPECTED_PROJECT_REF
+      phase: phaseName, worker: workerName, sourceSha, version: manifest.version, buildId: manifest.buildId,
+      projectRef: sourceEnv.MOFISH_SMOKE_EXPECTED_PROJECT_REF
     }, null, 2) + '\n');
     await run(process.platform === 'win32' ? 'npx.cmd' : 'npx', [
       '--yes', 'wrangler@4.151.0', 'deploy', '--config', 'wrangler.toml', '--name', workerName,

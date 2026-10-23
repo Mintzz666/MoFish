@@ -372,7 +372,7 @@ export function createAccountUI({ auth, engine, store, config, onSessionChange =
     setNotice('正在发送重置邮件…');
     const res = await guard(() => auth.requestPasswordReset(email));
     // 无论邮箱是否存在都给出同样的提示，避免暴露账号是否存在。
-    setNotice(res?.ok ? '如果这个邮箱已经注册，重置密码的邮件已经发出。' : (res?.error?.message || '发送失败'),
+    setNotice(res?.ok ? '请求已提交；如果该邮箱已在当前环境注册，系统会尝试发送重置密码邮件。请同时检查垃圾邮件。' : (res?.error?.message || '发送失败'),
       res?.ok ? 'ok' : 'error');
   }
 

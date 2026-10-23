@@ -10,7 +10,8 @@ import { createFishMesh, disposeFish } from './fish.js';
 import { createDecorMesh, disposeDecor } from './decor.js';
 import { FISH_TYPE_BY_ID, DECOR_KINDS } from '../catalog.js';
 import { fishAppearance, decorAppearance, fishSizeFactor, stageOf } from '../model.js';
-import { damp, mixHeading, smoothstep, stepHeading } from './motion.js';
+import { advanceMotion, damp, mixHeading, smoothstep, stepHeading } from './motion.js';
+import { createRenderPolicy } from '../render-policy.js';
 
 const FISH_RADIUS = 0.22;
 const EAT_RADIUS = 0.12;
@@ -37,7 +38,12 @@ export function createView3D({
   reduceMotion = false,
   canFeed = () => true
 }) {
-  let qualityKey = QUALITY[quality] ? quality : 'high';
+  const initialQuality = ['auto', 'low', 'high'].includes(quality) ? quality : 'high';
+  const qualityKey = 'high'; // Geometry stays stable across effect-only quality changes.
+  let currentQuality = initialQuality;
+  const renderPolicy = createRenderPolicy();
+  renderPolicy.setQualityPolicy(initialQuality);
+  const listenerController = new AbortController();
   let scene3d = null;
   let disposed = false;
   let paused = false;
@@ -64,16 +70,75 @@ export function createView3D({
   let pointers = new Map();
   let lastPinch = 0;
   let nightTarget = night;
-  let currentQuality = qualityKey;
   let needsResize = true;
+  let requestedVisible = true;
+  let appliedEffectsLevel = -1;
+
+  const now = () => globalThis.performance?.now?.() ?? Date.now();
 
   function settings() {
-    return QUALITY[qualityKey];
+    const level = renderPolicy.effectsLevel;
+    return {
+      ...QUALITY[qualityKey],
+      pixelRatio: [1, 1.25, 2][level] ?? 2,
+      shadows: level > 0,
+      caustics: level > 0,
+      motes: level === 0 ? 46 : 140
+    };
+  }
+
+  function applyEffectsLevel() {
+    const level = renderPolicy.effectsLevel;
+    if (appliedEffectsLevel === level) return;
+    appliedEffectsLevel = level;
+    scene3d?.setEffectsLevel(level);
+    const shadows = level > 0;
+    agents.forEach((agent) => {
+      setFishCastShadow(agent, shadows);
+    });
+    decorNodes.forEach((node) => {
+      const mesh = node.group.userData.mesh;
+      if (mesh) {
+        mesh.castShadow = shadows && node.item.kind !== 'plant';
+        mesh.receiveShadow = shadows;
+      }
+    });
+  }
+
+  function setFishCastShadow(agent, enabled) {
+    const body = agent.group.children.find((child) => child.isMesh);
+    if (body) body.castShadow = enabled;
+    const fishParts = agent.group.userData;
+    fishParts.tailPivot?.children.forEach((child) => { if (child.isMesh) child.castShadow = enabled; });
+    if (fishParts.pectoralL) fishParts.pectoralL.castShadow = enabled;
+    if (fishParts.pectoralR) fishParts.pectoralR.castShadow = enabled;
+  }
+
+  function setQualityPolicy(policy) {
+    renderPolicy.setQualityPolicy(policy);
+    currentQuality = renderPolicy.performanceInfo.policy;
+    applyEffectsLevel();
+  }
+
+  function setActivity(activity = {}) {
+    if (Object.hasOwn(activity, 'visible')) requestedVisible = Boolean(activity.visible);
+    renderPolicy.setActivity({
+      visible: requestedVisible && !paused && !disposed,
+      ...(Object.hasOwn(activity, 'interacting') ? { interacting: activity.interacting } : {})
+    });
+    if (requestedVisible && !paused && !disposed) start();
+    else stop();
+  }
+
+  function notifyInteraction() {
+    renderPolicy.notifyInteraction();
   }
 
   // ---------------------------------------------------------------- 初始化
   function init() {
-    scene3d = createTankScene({ canvas, quality: qualityKey, reduceMotion });
+    scene3d = createTankScene({ canvas, quality: qualityKey, reduceMotion, effectsLevel: renderPolicy.effectsLevel,
+      powerPreference: initialQuality === 'high' ? 'high-performance' : 'low-power' });
+    appliedEffectsLevel = renderPolicy.effectsLevel;
     scene3d.setNight(nightTarget ? 1 : 0);
     scene3d.resize(canvas.clientWidth || 800, canvas.clientHeight || 480);
 
@@ -183,6 +248,7 @@ export function createView3D({
       greetAt: -Infinity, visualScale: null,
       tailPivot: group.userData.tailPivot
     };
+    setFishCastShadow(agent, renderPolicy.effectsLevel > 0);
     return agent;
   }
 
@@ -193,6 +259,7 @@ export function createView3D({
     while (fresh.children.length) agent.group.add(fresh.children[0]);
     agent.group.userData = fresh.userData;
     agent.group.userData.fishId = fish.id;
+    setFishCastShadow(agent, renderPolicy.effectsLevel > 0);
     agent.stageIndex = stageIndex;
     agent.typeId = type.id;
     agent.tailPivot = fresh.userData.tailPivot;
@@ -232,16 +299,13 @@ export function createView3D({
     const group = createDecorMesh(appearance, { quality: settings().decorDetail });
     group.userData.decorId = item.id;
     group.userData.appearance = appearance;
-    // 低画质用一张柔和的接触阴影替代实时阴影
-    if (!settings().shadows) {
-      const radius = item.kind === 'plant' ? 0.24 : item.kind === 'rock' ? 0.3 : 0.34;
-      const blob = new THREE.Mesh(new THREE.PlaneGeometry(radius * 2.4, radius * 2.4), scene3d.blobMaterial.clone());
-      blob.rotation.x = -Math.PI / 2;
-      blob.position.y = 0.012;
-      blob.renderOrder = 1;
-      group.add(blob);
-      group.userData.blob = blob;
+    const mesh = group.userData.mesh;
+    if (mesh) {
+      mesh.castShadow = settings().shadows && item.kind !== 'plant';
+      mesh.receiveShadow = settings().shadows;
     }
+    // Low effects use the sand's ambient shading. Never allocate a one-off blob
+    // only for objects created after an automatic tier change.
     return { group, key, item };
   }
 
@@ -299,6 +363,7 @@ export function createView3D({
   // ---------------------------------------------------------------- 食物
   function spawnFood(x, z, count = 5) {
     if (canFeed() === false) return false;
+    notifyInteraction();
     addFood(x, z, count);
     return true;
   }
@@ -524,16 +589,20 @@ export function createView3D({
   function frame(ts) {
     if (disposed || paused) return;
     if (!scene3d) return;
+    if (!renderPolicy.shouldRender(ts)) {
+      animationHandle = requestAnimationFrame(frame);
+      return;
+    }
+    const workStartedAt = now();
     const t = ts / 1000;
-    const dt = clock.last ? Math.min((ts - clock.last) / 1000, 0.05) : 0;
+    const dt = clock.last ? Math.min((ts - clock.last) / 1000, 0.25) : 0;
     clock.last = ts;
     clock.time = t;
     if (needsResize) {
       scene3d.resize(canvas.clientWidth, canvas.clientHeight);
       needsResize = false;
     }
-    updateFood(dt, t);
-    updateFish(dt, t);
+    advanceMotion(dt,t,(step,time) => { updateFood(step,time); updateFish(step,time); });
     decorNodes.forEach((node) => {
       const uniforms = node.group.userData.material?.userData?.uniforms;
       if (uniforms) uniforms.uTime.value = t;
@@ -542,11 +611,13 @@ export function createView3D({
       selectionRing.material.opacity = reduceMotion ? 0.95 : 0.88 + Math.sin(t * 2.2) * 0.07;
     }
     scene3d.update(dt, t);
+    renderPolicy.recordWork(now() - workStartedAt, ts);
+    applyEffectsLevel();
     animationHandle = requestAnimationFrame(frame);
   }
 
   function start() {
-    if (animationHandle || disposed) return;
+    if (animationHandle || disposed || paused || !requestedVisible) return;
     clock.last = 0;
     animationHandle = requestAnimationFrame(frame);
   }
@@ -557,13 +628,15 @@ export function createView3D({
   }
 
   function pause() {
+    if (paused) return;
     paused = true;
-    stop();
+    setActivity({});
   }
 
   function resume() {
+    if (!paused) return;
     paused = false;
-    if (!disposed) start();
+    setActivity({});
   }
 
   // ---------------------------------------------------------------- 指针交互
@@ -583,12 +656,23 @@ export function createView3D({
     return playMode;
   }
 
-  function greetFish(id) {
+  function greetFish(id, { ripple = true } = {}) {
     const agent = agents.get(id);
     if (!agent) return false;
     agent.greetAt = clock.time;
-    scene3d?.addRipple?.(agent.group.position.x, agent.group.position.z, 0.26);
+    if (ripple) scene3d?.addRipple?.(agent.group.position.x, agent.group.position.z, 0.26);
     return true;
+  }
+
+  function greetNearestFish(point) {
+    const nearest = [...agents.values()]
+      .map((agent) => ({
+        id: agent.id,
+        distance: (agent.group.position.x - point.x) ** 2 + (agent.group.position.z - point.z) ** 2
+      }))
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, 3);
+    for (const { id } of nearest) greetFish(id, { ripple: false });
   }
 
   function getPointer(event) {
@@ -646,7 +730,8 @@ export function createView3D({
   }
 
   function bindPointer() {
-    canvas.addEventListener('pointerdown', (event) => {
+    const onPointerDown = (event) => {
+      notifyInteraction();
       canvas.focus?.();
       pointers.set(event.pointerId, getPointer(event));
       canvas.setPointerCapture?.(event.pointerId);
@@ -654,9 +739,11 @@ export function createView3D({
         if (event.pointerType === 'touch') playTouchPointerId = event.pointerId;
         updatePlayPointer(event);
       }
-      if (pointers.size === 2) {
-        const [a, b] = [...pointers.values()];
-        lastPinch = Math.hypot(a.x - b.x, a.y - b.y);
+      if (pointers.size > 1) {
+        if (pointers.size === 2) {
+          const [a, b] = [...pointers.values()];
+          lastPinch = Math.hypot(a.x - b.x, a.y - b.y);
+        }
         dragState = null;
         return;
       }
@@ -669,20 +756,20 @@ export function createView3D({
         startX: event.clientX, startY: event.clientY,
         lastX: event.clientX, lastY: event.clientY,
         moved: 0,
+        maxDistance: 0,
+        downAt: now(),
         hit,
         pointerType: event.pointerType,
+        singleFinger: event.pointerType !== 'touch' || pointers.size === 1,
         dragging: false,
+        decorPicked: false,
         mode,
         anchor: decorNode && floorStart ? { x: decorNode.group.position.x - floorStart.x, z: decorNode.group.position.z - floorStart.z } : { x: 0, z: 0 }
       };
-      if (mode === 'decor' && hit?.kind === 'decor') {
-        selectDecor(hit.id);
-        onPickDecor(hit.id);
-        canvas.style.cursor = 'grabbing';
-      }
-    });
+    };
 
-    canvas.addEventListener('pointermove', (event) => {
+    const onPointerMove = (event) => {
+      notifyInteraction();
       if (pointers.has(event.pointerId)) pointers.set(event.pointerId, getPointer(event));
       if (playMode && mode === 'view') updatePlayPointer(event);
       if (pointers.size === 2) {
@@ -698,7 +785,16 @@ export function createView3D({
       dragState.lastX = event.clientX;
       dragState.lastY = event.clientY;
       dragState.moved += Math.abs(dx) + Math.abs(dy);
-      if (!dragState.dragging && dragState.moved > 6) dragState.dragging = true;
+      dragState.maxDistance = Math.max(dragState.maxDistance, Math.hypot(event.clientX - dragState.startX, event.clientY - dragState.startY));
+      if (!dragState.dragging && dragState.maxDistance > 8) {
+        dragState.dragging = true;
+        if (mode === 'decor' && dragState.hit?.kind === 'decor') {
+          selectDecor(dragState.hit.id);
+          onPickDecor(dragState.hit.id);
+          dragState.decorPicked = true;
+          canvas.style.cursor = 'grabbing';
+        }
+      }
 
       // 触屏逗鱼时，手指沿缸面滑动来引导小鱼；不同时把同一手势解释为转相机。
       if (mode === 'view' && playMode) return;
@@ -718,9 +814,10 @@ export function createView3D({
       if (dragState.dragging) {
         scene3d?.orbit(dx / Math.max(220, canvas.clientWidth), -dy / Math.max(180, canvas.clientHeight));
       }
-    });
+    };
 
     const finish = (event) => {
+      notifyInteraction();
       pointers.delete(event.pointerId);
       if (pointers.size < 2) lastPinch = 0;
       if (playTouchPointerId === event.pointerId) {
@@ -731,6 +828,7 @@ export function createView3D({
       const stateSnapshot = dragState;
       dragState = null;
       canvas.style.cursor = mode === 'decor' ? 'grab' : 'default';
+      if (event.type === 'pointercancel') return;
       if (stateSnapshot.dragging && mode === 'decor' && stateSnapshot.hit?.kind === 'decor') {
         const node = decorNodes.get(stateSnapshot.hit.id);
         if (node) {
@@ -740,9 +838,7 @@ export function createView3D({
         }
         return;
       }
-      const moved = stateSnapshot.moved > 6;
-      if (event.type === 'pointercancel') return;
-      if (moved) return;
+      if (stateSnapshot.dragging || !stateSnapshot.singleFinger || now() - stateSnapshot.downAt > 500 || stateSnapshot.maxDistance > 8) return;
       const hit = stateSnapshot.hit;
       if (!hit) return;
       if (hit.kind === 'fish') {
@@ -750,33 +846,46 @@ export function createView3D({
         onPickFish(hit.id);
       }
       else if (hit.kind === 'decor') {
-        if (mode === 'decor') selectDecor(hit.id);
+        if (mode === 'decor') {
+          if (!stateSnapshot.decorPicked) {
+            selectDecor(hit.id);
+            onPickDecor(hit.id);
+          }
+        }
         else onPickDecor(hit.id);
       } else if (hit.kind === 'water') {
         if (mode === 'view') {
           scene3d?.addRipple?.(hit.point.x, hit.point.z, 0.52);
+          greetNearestFish(hit.point);
           if (playMode) return;
-          if (spawnFood(hit.point.x, hit.point.z, 5)) onFeed({ x: hit.point.x, z: hit.point.z, source: 'tap' });
         } else {
           selectDecor(null);
           onPickDecor(null);
         }
       }
     };
-    canvas.addEventListener('pointerup', finish);
-    canvas.addEventListener('pointercancel', finish);
-    canvas.addEventListener('pointerleave', (event) => {
+    const onPointerLeave = (event) => {
+      notifyInteraction();
       playPointerActive = false;
       if (playTouchPointerId === event.pointerId) playTouchPointerId = null;
       if (dragState && dragState.pointerId === event.pointerId && dragState.dragging) finish(event);
-    });
+    };
 
-    canvas.addEventListener('wheel', (event) => {
+    canvas.addEventListener('pointerdown', onPointerDown, { signal: listenerController.signal });
+    canvas.addEventListener('pointermove', onPointerMove, { signal: listenerController.signal });
+    canvas.addEventListener('pointerup', finish, { signal: listenerController.signal });
+    canvas.addEventListener('pointercancel', finish, { signal: listenerController.signal });
+    canvas.addEventListener('pointerleave', onPointerLeave, { signal: listenerController.signal });
+
+    const onWheel = (event) => {
+      notifyInteraction();
       event.preventDefault();
       scene3d?.zoom(event.deltaY > 0 ? 1.06 : 0.94);
-    }, { passive: false });
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false, signal: listenerController.signal });
 
-    canvas.addEventListener('keydown', (event) => {
+    const onKeyDown = (event) => {
+      notifyInteraction();
       const step = event.shiftKey ? 0.06 : 0.02;
       if (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'ArrowUp' || event.key === 'ArrowDown') {
         if (mode === 'decor' && selection) {
@@ -799,27 +908,25 @@ export function createView3D({
         }
       } else if ((event.key === ' ' || event.code === 'Space') && mode === 'view') {
         event.preventDefault();
-        if (spawnFood(0, 0, 6)) {
-          scene3d?.addRipple?.(0, 0, 0.5);
-          onFeed({ x: 0, z: 0, source: 'keyboard' });
-        }
+        feedRandom('keyboard');
       }
-    });
+    };
+    canvas.addEventListener('keydown', onKeyDown, { signal: listenerController.signal });
   }
 
-  function feedRandom() {
+  function feedRandom(source = 'button') {
     if (canFeed() === false) return false;
+    notifyInteraction();
     const x = (Math.random() - 0.5) * TANK.width * 0.5;
     const z = (Math.random() - 0.5) * TANK.depth * 0.5;
     addFood(x, z, 6);
     scene3d?.addRipple?.(x, z, 0.5);
-    onFeed({ x, z, source: 'button' });
+    onFeed({ x, z, source });
     return true;
   }
 
   // ---------------------------------------------------------------- 生命周期
-  // 画质切换由 app.js 负责：它会换一块新的 canvas 再重新创建视图，
-  // 因为同一个 canvas 元素不能再拿一个新的 WebGL 上下文。
+  // Quality changes affect runtime effects and frame pacing, retaining this canvas and geometry.
   function setNight(on) {
     nightTarget = Boolean(on);
     scene3d?.setNight(nightTarget);
@@ -847,27 +954,33 @@ export function createView3D({
   }
 
   function dispose() {
+    if (disposed) return;
     disposed = true;
     // 先摘掉 contextlost 监听：dispose 里的 forceContextLoss 会触发它，
     // 否则会被误判成「运行中丢失上下文」，导致递归切换到 2D。
     canvas.removeEventListener('webglcontextlost', onContextLost);
+    listenerController.abort();
     stop();
+    renderPolicy.setActivity({ visible: false });
     if (scene3d) scene3d.dispose();
     scene3d = null;
     agents.clear();
     decorNodes.clear();
     foods.length = 0;
+    pointers.clear();
   }
 
   init();
   bindPointer();
-  canvas.addEventListener('webglcontextlost', onContextLost, false);
+  canvas.addEventListener('webglcontextlost', onContextLost, { signal: listenerController.signal });
 
   return {
     setState, setMode, setPlayMode, greetFish, setNight, feedRandom, resize, pause, resume, dispose,
+    setQualityPolicy, setActivity, notifyInteraction,
     selectDecor, getSelected, nudgeSelected,
     spawnFood,
     get quality() { return currentQuality; },
+    get performanceInfo() { return renderPolicy.performanceInfo; },
     get playMode() { return playMode; },
     get motionInfo() {
       return {foodCount: foods.length, lureActive: playPointerActive, fish: [...agents.values()].map(a => ({id:a.id,x:a.group.position.x,y:a.group.position.y,z:a.group.position.z,speed:a.speed,heading:a.heading,greeting:clock.time-a.greetAt<1.8}))};

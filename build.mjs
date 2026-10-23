@@ -5,9 +5,11 @@
 // - 检测到 service_role JWT 或 sb_secret_ 前缀时直接让构建失败，避免管理密钥被打进前端；
 // - 校验逻辑与运行时共用 web/cloud/config.js，不做两套判断。
 
-import { cp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { cp, rm, mkdir, writeFile, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { readCloudConfig, classifyKey } from './web/cloud/config.js';
-import { build } from 'esbuild';
+import { build, transform } from 'esbuild';
 import { loadEnvFile } from 'node:process';
 
 try { loadEnvFile(new URL('./.env', import.meta.url)); }
@@ -50,16 +52,24 @@ const STATIC_FILES = ['index.html', 'style.css', 'sharing.css', 'icon.svg', 'man
 for (const file of STATIC_FILES) {
   await cp(`web/${file}`, `dist/${file}`);
 }
-await build({
+const pkg = JSON.parse(await readFile('package.json', 'utf8'));
+const sourceSha = execFileSync('git', ['rev-parse', 'HEAD'], {encoding:'utf8'}).trim();
+// Include content in the build identity, including uncommitted development previews.
+const result = await build({
   entryPoints: ['web/app.js'],
-  outfile: 'dist/app.js',
+  outdir: 'dist/assets',
+  entryNames: '[name]-[hash]',
+  chunkNames: '[name]-[hash]',
+  splitting: true,
+  metafile: true,
   bundle: true,
   platform: 'browser',
   format: 'esm',
   target: ['es2022'],
   minify: true,
   legalComments: 'none',
-  loader: { '.glsl': 'text' }
+  loader: { '.glsl': 'text' },
+  define: { __MOFISH_VERSION__: JSON.stringify(pkg.version), __MOFISH_SOURCE_SHA__: JSON.stringify(sourceSha) }
 });
 
 if (resolved) {
@@ -74,3 +84,40 @@ if (resolved) {
   console.log('Built static aquarium in dist/ · 未配置云同步（dist/config.js 为空，游客模式）');
   console.log('如需启用：设置 MOFISH_SUPABASE_URL 与 MOFISH_SUPABASE_ANON_KEY 后重新构建（见 docs/CLOUD-SETUP.md）。');
 }
+
+const outputs = result.metafile.outputs;
+const entry = Object.keys(outputs).find(name => outputs[name].entryPoint === 'web/app.js');
+const relative = name => name.replace(/^dist\//, '');
+const initial = new Set();
+function collect(name) {
+  if (initial.has(name)) return;
+  initial.add(name);
+  for (const item of outputs[name]?.imports || []) if (item.kind !== 'dynamic-import') collect(item.path);
+}
+collect(entry);
+let html = await readFile('dist/index.html', 'utf8');
+html = html.replace('src="app.js"', `src="${relative(entry)}"`);
+const styles = [];
+for (const name of ['style.css','sharing.css']) {
+  const bytes = await readFile('dist/' + name);
+  const parsed = await transform(bytes.toString(), {loader:'css',logLevel:'silent'});
+  if (parsed.warnings.length) throw new Error(`${name}: ${parsed.warnings.map(w => w.text).join('; ')}`);
+  const hash = createHash('sha256').update(bytes).digest('hex').slice(0,12);
+  const hashed = `assets/${name.replace('.css', '')}-${hash}.css`;
+  await writeFile('dist/' + hashed, bytes);
+  html = html.replace(`href="${name}"`, `href="${hashed}"`);
+  styles.push(hashed);
+}
+await writeFile('dist/index.html', html);
+// A tiny compatibility entry; pages always reference the content-addressed entry.
+await writeFile('dist/app.js', `import './${relative(entry)}';\n`);
+const shell = ['index.html','config.js','icon.svg','manifest.webmanifest',...styles,...[...initial].map(relative)];
+const lazy = Object.keys(outputs).filter(name => !initial.has(name)).map(relative);
+const hashes = Object.fromEntries(await Promise.all([...shell,...lazy].map(async name => [name,createHash('sha256').update(await readFile('dist/'+name)).digest('hex')])));
+const swTemplate = await readFile('web/sw.js','utf8');
+const buildId = createHash('sha256').update(JSON.stringify(hashes)).update(swTemplate).digest('hex').slice(0,16);
+const manifest = {version:pkg.version,buildId,sourceSha,entry:relative(entry),shell,lazy,hashes};
+await writeFile('dist/asset-manifest.json', JSON.stringify(manifest,null,2)+'\n');
+const sw = swTemplate.replace('__MOFISH_ASSET_MANIFEST__', JSON.stringify(manifest));
+await writeFile('dist/sw.js', sw);
+console.log(`MoFish V${pkg.version} · build ${buildId} · initial ${initial.size} / lazy ${lazy.length} JavaScript files`);

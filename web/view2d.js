@@ -6,6 +6,7 @@
 import { FISH_TYPE_BY_ID, DECOR_KINDS } from './catalog.js';
 import { fishAppearance, decorAppearance, fishSizeFactor, fishProportions, mulberry32, hashSeed } from './model.js';
 import { angleDelta, turnToward, uprightFishPose } from './aquarium/sprite-motion.js';
+import { createRenderPolicy } from './render-policy.js';
 
 const TAU = Math.PI * 2;
 const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
@@ -17,7 +18,8 @@ export function createView2D({
   onPickFish = () => {},
   onEat = () => {},
   onFeed = () => {},
-  canFeed = () => true
+  canFeed = () => true,
+  quality = 'high'
 }) {
   const ctx = canvas.getContext('2d');
   let state = null;
@@ -30,15 +32,37 @@ export function createView2D({
   let disposed = false;
   let isNight = night;
   let nightMix = night ? 1 : 0;
+  const renderPolicy = createRenderPolicy();
+  renderPolicy.setQualityPolicy(quality);
+  const listenerController = new AbortController();
   const agents = new Map();
+  const agentList = [];
+  const fishDrawList = [];
+  const decorDrawList = [];
+  const decorCache = new Map();
+  const pointerGestures = new Map();
   const foods = [];
   const ripples = [];
+  let requestedVisible = true;
+  let appliedEffectsLevel = -1;
+
+  const now = () => globalThis.performance?.now?.() ?? Date.now();
 
   function resize() {
     const rect = canvas.getBoundingClientRect();
-    W = Math.max(2, rect.width);
-    H = Math.max(2, rect.height);
-    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const nextW = Math.max(2, rect.width), nextH = Math.max(2, rect.height);
+    if (nextW !== W || nextH !== H) {
+      const sx = nextW / W, sy = nextH / H;
+      for (const agent of agentList) {
+        agent.x *= sx; agent.y *= sy;
+        if (agent.wanderTarget) { agent.wanderTarget.x *= sx; agent.wanderTarget.y *= sy; }
+      }
+      for (const point of [...foods,...ripples]) { point.x *= sx; point.y *= sy; }
+    }
+    W = nextW;
+    H = nextH;
+    const cap = [1, 1.25, 2][renderPolicy.effectsLevel] ?? 2;
+    dpr = Math.min(window.devicePixelRatio || 1, cap);
     canvas.width = Math.round(W * dpr);
     canvas.height = Math.round(H * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -47,6 +71,8 @@ export function createView2D({
   function setState(next) {
     state = next;
     const seen = new Set();
+    agentList.length = 0;
+    fishDrawList.length = 0;
     next.fish.forEach((fish, index) => {
       seen.add(fish.id);
       let agent = agents.get(fish.id);
@@ -58,6 +84,7 @@ export function createView2D({
           angle: Math.random() * TAU,
           speed: 20,
           phase: Math.random() * TAU,
+          greetAt: -Infinity,
           bend: 0,
           wanderTarget: null,
           wanderUntil: 0,
@@ -71,8 +98,19 @@ export function createView2D({
       agent.baseSpeed = type.motion.speed * 46;
       agent.turnRate = type.motion.turn;
       agent.wag = type.motion.wag;
+      agentList.push(agent);
+      fishDrawList.push(agent);
     });
     for (const [id] of agents) if (!seen.has(id)) agents.delete(id);
+    decorDrawList.length = 0;
+    decorDrawList.push(...(next.decor || []));
+    decorDrawList.sort((a, b) => a.z - b.z);
+    const liveDecor = new Set(decorDrawList.filter((item) => item.kind === 'rock' || item.kind === 'wood').map((item) => item.id));
+    for (const [id, entry] of decorCache) if (!liveDecor.has(id)) decorCache.delete(id);
+    for (const item of decorDrawList) {
+      const entry = decorCache.get(item.id);
+      if (entry && entry.signature !== `${item.kind}:${item.type}:${item.seed}`) decorCache.delete(item.id);
+    }
   }
 
   function setNight(on) {
@@ -81,6 +119,7 @@ export function createView2D({
 
   function spawnFood(x, y, count = 5) {
     if (!canFeed()) return false;
+    notifyInteraction();
     const b = bounds();
     for (let i = 0; i < count; i += 1) {
       foods.push({
@@ -91,8 +130,34 @@ export function createView2D({
       });
     }
     if (foods.length > 40) foods.splice(0, foods.length - 40);
+    if (ripples.length >= 8) ripples.shift();
     ripples.push({ x, y, age: 0 });
     return true;
+  }
+
+  function notifyInteraction() {
+    renderPolicy.notifyInteraction();
+  }
+
+  function applyEffectsLevel() {
+    if (appliedEffectsLevel === renderPolicy.effectsLevel) return;
+    appliedEffectsLevel = renderPolicy.effectsLevel;
+    resize();
+  }
+
+  function setQualityPolicy(policy) {
+    renderPolicy.setQualityPolicy(policy);
+    applyEffectsLevel();
+  }
+
+  function setActivity(activity = {}) {
+    if (Object.hasOwn(activity, 'visible')) requestedVisible = Boolean(activity.visible);
+    renderPolicy.setActivity({
+      visible: requestedVisible && !paused && !disposed,
+      ...(Object.hasOwn(activity, 'interacting') ? { interacting: activity.interacting } : {})
+    });
+    if (requestedVisible && !paused && !disposed) start();
+    else stop();
   }
 
   /** 鱼在 2D 里的可用水层：上留水面、下留沙面与前景水草。 */
@@ -122,7 +187,7 @@ export function createView2D({
 
   function update(dt, t) {
     const b = bounds();
-    const list = [...agents.values()];
+    const list = agentList;
     const speedScale = reduceMotion ? 0.55 : 1;
     for (const agent of list) {
       const fish = agent.fish;
@@ -434,113 +499,125 @@ export function createView2D({
     ctx.restore();
   }
 
+  function getDecorCache(item) {
+    const signature = `${item.kind}:${item.type}:${item.seed}`;
+    let entry = decorCache.get(item.id);
+    if (entry?.signature === signature) {
+      decorCache.delete(item.id);
+      decorCache.set(item.id, entry);
+      return entry;
+    }
+    decorCache.delete(item.id);
+    const a = decorAppearance(item.kind, item.type, item.seed);
+    if (!a) return null;
+    if (item.kind === 'rock') {
+      const path = new Path2D();
+      if (a.shape === 'layered') {
+        for (let i = 0; i < 3; i += 1) {
+          const w = 1 - i * 0.16;
+          const h = 0.22;
+          path.rect(-w / 2 + (i % 2 ? 0.025 : -0.025), -h * (i + 1) * 1.15, w, h);
+        }
+      } else if (a.shape === 'ridged' || a.shape === 'blocky') {
+        for (let i = 0; i < 7; i += 1) {
+          const angle = (i / 7) * TAU;
+          const r = 0.36 + ((i * 37 + item.seed) % 10) * 0.022;
+          const px = Math.cos(angle) * r;
+          const py = Math.sin(angle) * r * 0.62;
+          if (i === 0) path.moveTo(px, py); else path.lineTo(px, py);
+        }
+        path.closePath();
+      } else path.ellipse(0, 0, 0.44, 0.26, 0, 0, TAU);
+      const highlight = new Path2D();
+      highlight.moveTo(-0.34, -0.08);
+      highlight.lineTo(-0.12, -0.27);
+      highlight.lineTo(0.1, -0.2);
+      highlight.lineTo(0.01, -0.05);
+      highlight.closePath();
+      const shade = new Path2D();
+      shade.moveTo(-0.28, 0.08);
+      shade.lineTo(0.3, 0.04);
+      shade.lineTo(0.16, 0.2);
+      shade.lineTo(-0.08, 0.21);
+      shade.closePath();
+      entry = { signature, appearance: a, path, highlight, shade };
+    } else {
+      const trunk = new Path2D();
+      trunk.moveTo(-0.4, 0);
+      trunk.bezierCurveTo(-0.1, -0.3, 0.1, -0.2, 0.4, -0.42);
+      const branches = new Path2D();
+      for (let i = 0; i < 3; i += 1) {
+        const u = 0.3 + i * 0.2;
+        branches.moveTo(-0.4 + 0.8 * u, -0.28 * u);
+        branches.lineTo(-0.4 + 0.8 * u + 0.2, -(0.45 + i * 0.06));
+      }
+      entry = { signature, appearance: a, trunk, branches };
+    }
+    decorCache.set(item.id, entry);
+    while (decorCache.size > 32) decorCache.delete(decorCache.keys().next().value);
+    return entry;
+  }
+
   function drawRock(item) {
-    const a = decorAppearance('rock', item.type, item.seed);
-    if (!a) return;
+    const cached = getDecorCache(item);
+    if (!cached) return;
+    const { appearance: a } = cached;
     const x = item.x * W;
     const y = H * 0.84 - (1 - item.z) * 16;
     const s = (a.params.size || 0.24) * 280 * item.scale * (0.8 + item.z * 0.4);
     ctx.save();
     ctx.translate(x, y);
+    ctx.scale(s, s);
     ctx.fillStyle = 'rgba(35, 49, 42, 0.16)';
     ctx.beginPath();
-    ctx.ellipse(3, s * 0.12, s * 0.48, s * 0.16, 0, 0, TAU);
+    ctx.ellipse(3 / s, 0.12, 0.48, 0.16, 0, 0, TAU);
     ctx.fill();
     ctx.fillStyle = a.color;
-    ctx.beginPath();
-    if (a.shape === 'layered') {
-      const layers = 3;
-      for (let i = 0; i < layers; i += 1) {
-        const w = s * (1 - i * 0.16);
-        const h = s * 0.22;
-        ctx.rect(-w / 2 + (i % 2 ? 2 : -2), -h * (i + 1) * 1.15, w, h);
-      }
-    } else if (a.shape === 'ridged' || a.shape === 'blocky') {
-      const pts = 7;
-      for (let i = 0; i < pts; i += 1) {
-        const angle = (i / pts) * TAU;
-        const r = s * (0.36 + ((i * 37 + item.seed) % 10) * 0.022);
-        const px = Math.cos(angle) * r;
-        const py = Math.sin(angle) * r * 0.62;
-        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-      }
-      ctx.closePath();
-    } else {
-      ctx.ellipse(0, 0, s * 0.44, s * 0.26, 0, 0, TAU);
-    }
-    ctx.fill();
+    ctx.fill(cached.path);
     ctx.globalAlpha = 0.32;
     ctx.fillStyle = a.highlight;
-    ctx.beginPath();
-    ctx.moveTo(-s * 0.34, -s * 0.08);
-    ctx.lineTo(-s * 0.12, -s * 0.27);
-    ctx.lineTo(s * 0.1, -s * 0.2);
-    ctx.lineTo(s * 0.01, -s * 0.05);
-    ctx.closePath();
-    ctx.fill();
+    ctx.fill(cached.highlight);
     ctx.globalAlpha = 0.15;
     ctx.fillStyle = '#203a33';
-    ctx.beginPath();
-    ctx.moveTo(-s * 0.28, s * 0.08);
-    ctx.lineTo(s * 0.3, s * 0.04);
-    ctx.lineTo(s * 0.16, s * 0.2);
-    ctx.lineTo(-s * 0.08, s * 0.21);
-    ctx.closePath();
-    ctx.fill();
+    ctx.fill(cached.shade);
     ctx.restore();
   }
 
   function drawWood(item) {
-    const a = decorAppearance('wood', item.type, item.seed);
-    if (!a) return;
+    const cached = getDecorCache(item);
+    if (!cached) return;
+    const { appearance: a } = cached;
     const x = item.x * W;
     const y = H * 0.84 - (1 - item.z) * 14;
     const s = (a.params.length || 0.6) * 175 * item.scale;
     ctx.save();
     ctx.translate(x, y);
+    ctx.scale(s, s);
     ctx.lineCap = 'round';
-    ctx.lineWidth = Math.max(2, (a.params.girth || 0.04) * 130 * item.scale);
-    const drawTrunk = (offsetY = 0) => {
-      ctx.beginPath();
-      ctx.moveTo(-s * 0.4, offsetY);
-      ctx.bezierCurveTo(-s * 0.1, -s * 0.3 + offsetY, s * 0.1, -s * 0.2 + offsetY, s * 0.4, -s * 0.42 + offsetY);
-      ctx.stroke();
-    };
-    const trunkWidth = ctx.lineWidth;
+    const trunkWidth = Math.max(2, (a.params.girth || 0.04) * 130 * item.scale);
+    const normalizedWidth = trunkWidth / s;
     ctx.strokeStyle = 'rgba(31, 44, 36, 0.18)';
-    ctx.lineWidth = trunkWidth * 1.12;
-    drawTrunk(3);
+    ctx.lineWidth = normalizedWidth * 1.12;
+    ctx.save(); ctx.translate(0, 3 / s); ctx.stroke(cached.trunk); ctx.restore();
     ctx.strokeStyle = a.color;
-    ctx.lineWidth = trunkWidth;
-    drawTrunk();
+    ctx.lineWidth = normalizedWidth;
+    ctx.stroke(cached.trunk);
     ctx.strokeStyle = a.highlight || '#d6c59a';
     ctx.globalAlpha = 0.5;
-    ctx.lineWidth = Math.max(1, trunkWidth * 0.24);
-    drawTrunk(-trunkWidth * 0.16);
+    ctx.lineWidth = Math.max(1, trunkWidth * 0.24) / s;
+    ctx.save(); ctx.translate(0, -trunkWidth * 0.16 / s); ctx.stroke(cached.trunk); ctx.restore();
     ctx.globalAlpha = 1;
-    for (let i = 0; i < 3; i += 1) {
-      const u = 0.3 + i * 0.2;
-      ctx.strokeStyle = 'rgba(31, 44, 36, 0.16)';
-      ctx.lineWidth = Math.max(1, trunkWidth * 0.42);
-      ctx.beginPath();
-      ctx.moveTo(-s * 0.4 + s * 0.8 * u, -s * 0.28 * u + 2);
-      ctx.lineTo(-s * 0.4 + s * 0.8 * u + s * 0.2, -s * (0.45 + i * 0.06) + 2);
-      ctx.stroke();
-      ctx.strokeStyle = a.color;
-      ctx.lineWidth = Math.max(1.4, trunkWidth * 0.5);
-      ctx.beginPath();
-      ctx.moveTo(-s * 0.4 + s * 0.8 * u, -s * 0.28 * u);
-      ctx.lineTo(-s * 0.4 + s * 0.8 * u + s * 0.2, -s * (0.45 + i * 0.06));
-      ctx.stroke();
-      ctx.strokeStyle = a.highlight || '#d6c59a';
-      ctx.globalAlpha = 0.45;
-      ctx.lineWidth = Math.max(0.7, trunkWidth * 0.15);
-      ctx.beginPath();
-      ctx.moveTo(-s * 0.4 + s * 0.8 * u, -s * 0.28 * u - 0.6);
-      ctx.lineTo(-s * 0.4 + s * 0.8 * u + s * 0.2, -s * (0.45 + i * 0.06) - 0.6);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
+    ctx.strokeStyle = 'rgba(31, 44, 36, 0.16)';
+    ctx.lineWidth = Math.max(1, trunkWidth * 0.42) / s;
+    ctx.save(); ctx.translate(0, 2 / s); ctx.stroke(cached.branches); ctx.restore();
+    ctx.strokeStyle = a.color;
+    ctx.lineWidth = Math.max(1.4, trunkWidth * 0.5) / s;
+    ctx.stroke(cached.branches);
+    ctx.strokeStyle = a.highlight || '#d6c59a';
+    ctx.globalAlpha = 0.45;
+    ctx.lineWidth = Math.max(0.7, trunkWidth * 0.15) / s;
+    ctx.save(); ctx.translate(0, -0.6 / s); ctx.stroke(cached.branches); ctx.restore();
+    ctx.globalAlpha = 1;
     ctx.restore();
   }
 
@@ -552,10 +629,15 @@ export function createView2D({
     const bodyLen = scale * 1.5;
     const depth = type.body.depth * bodyLen;
     const swimMotion = reduceMotion ? 0.38 : 1;
-    const wiggle = Math.sin(t * (2.2 + type.motion.freq) * swimMotion + a.phase) * type.motion.wag * swimMotion;
+    // An untouched fish starts at -Infinity; sin(Infinity) * 0 is still NaN
+    // and silently invalidates the Canvas transform before its first greeting.
+    const greetAge = Number.isFinite(agent.greetAt) ? t - agent.greetAt : -1;
+    const greetPulse = greetAge >= 0 && greetAge < 1.4 ? Math.sin((1 - greetAge / 1.4) * Math.PI * 0.5) : 0;
+    const wiggle = Math.sin(t * (2.2 + type.motion.freq) * swimMotion + a.phase) * type.motion.wag * swimMotion
+      + Math.sin(greetAge * 8) * greetPulse * 0.12;
     const pose = uprightFishPose(agent.angle);
     ctx.save();
-    ctx.translate(agent.x, agent.y);
+    ctx.translate(agent.x, agent.y - Math.sin(greetAge * 7) * greetPulse * 1.2);
     ctx.rotate(pose.tilt);
     ctx.scale(pose.flipX ? -1 : 1, 1);
     ctx.globalAlpha = isNight ? 0.88 : 0.96;
@@ -664,21 +746,26 @@ export function createView2D({
 
   function render(ts) {
     if (disposed || paused) return;
+    if (!renderPolicy.shouldRender(ts)) {
+      raf = requestAnimationFrame(render);
+      return;
+    }
+    const workStartedAt = now();
     const t = ts / 1000;
-    const dt = last ? Math.min((ts - last) / 1000, 0.05) : 0;
+    const dt = last ? Math.min((ts - last) / 1000, 0.25) : 0;
     last = ts;
     nightMix += ((isNight ? 1 : 0) - nightMix) * Math.min(1, dt * 1.5);
     update(dt, t);
     drawBackground(t);
-    // 造景按 z 排序：后面的先画
-    const decor = [...(state?.decor || [])].sort((a, b) => a.z - b.z);
-    for (const item of decor) {
+    // Both draw lists are refreshed by setState; sorting in place avoids a per-frame array copy.
+    for (const item of decorDrawList) {
       if (item.kind === 'plant') drawPlant(item, t);
       else if (item.kind === 'rock') drawRock(item);
       else drawWood(item);
     }
     // 鱼按 y 排序，形成前后遮挡
-    [...agents.values()].sort((a, b) => a.y - b.y).forEach((agent) => drawFish(agent, t));
+    fishDrawList.sort((a, b) => a.y - b.y);
+    for (const agent of fishDrawList) drawFish(agent, t);
     for (const food of foods) {
       ctx.fillStyle = '#e6cd96';
       ctx.beginPath();
@@ -692,11 +779,13 @@ export function createView2D({
       ctx.ellipse(ripple.x, ripple.y, 8 + ripple.age * 40, 3 + ripple.age * 14, 0, 0, TAU);
       ctx.stroke();
     }
+    renderPolicy.recordWork(now() - workStartedAt, ts);
+    applyEffectsLevel();
     raf = requestAnimationFrame(render);
   }
 
   function start() {
-    if (raf || disposed) return;
+    if (raf || disposed || !requestedVisible || paused) return;
     last = 0;
     raf = requestAnimationFrame(render);
   }
@@ -710,48 +799,105 @@ export function createView2D({
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   }
 
-  canvas.addEventListener('pointerdown', (event) => {
+  function greetNearby(x, y, t) {
+    const nearest = agentList
+      .map((agent) => ({ agent, distance: (agent.x - x) ** 2 + (agent.y - y) ** 2 }))
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, 3);
+    for (const { agent } of nearest) agent.greetAt = t;
+  }
+
+  function onPointerDown(event) {
+    notifyInteraction();
+    pointerGestures.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+      maxDistance: 0,
+      downAt: now(),
+      pointerType: event.pointerType,
+      multi: false
+    });
+    if (pointerGestures.size > 1) {
+      for (const gesture of pointerGestures.values()) gesture.multi = true;
+    }
+    canvas.setPointerCapture?.(event.pointerId);
+  }
+
+  function onPointerMove(event) {
+    const gesture = pointerGestures.get(event.pointerId);
+    if (!gesture) return;
+    notifyInteraction();
+    gesture.maxDistance = Math.max(gesture.maxDistance, Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y));
+  }
+
+  function onPointerUp(event) {
+    notifyInteraction();
+    const gesture = pointerGestures.get(event.pointerId);
+    pointerGestures.delete(event.pointerId);
+    if (!gesture || gesture.multi || event.type === 'pointercancel') return;
+    if (now() - gesture.downAt > 500 || gesture.maxDistance > 8) return;
     const p = pointerToLocal(event);
     let picked = null;
     let best = 34;
-    for (const agent of agents.values()) {
+    for (const agent of agentList) {
       const d = Math.hypot(agent.x - p.x, agent.y - p.y);
       if (d < best) { best = d; picked = agent; }
     }
     if (picked) {
+      picked.greetAt = now() / 1000;
       onPickFish(picked.id);
       return;
     }
-    if (spawnFood(p.x, p.y, 5)) onFeed({ x: p.x, y: p.y, source: 'tap' });
-  });
+    if (ripples.length >= 8) ripples.shift();
+    ripples.push({ x: p.x, y: p.y, age: 0 });
+    greetNearby(p.x, p.y, now() / 1000);
+  }
+
+  canvas.addEventListener('pointerdown', onPointerDown, { signal: listenerController.signal });
+  canvas.addEventListener('pointermove', onPointerMove, { signal: listenerController.signal });
+  canvas.addEventListener('pointerup', onPointerUp, { signal: listenerController.signal });
+  canvas.addEventListener('pointercancel', onPointerUp, { signal: listenerController.signal });
 
   function feedRandom() {
+    notifyInteraction();
     if (spawnFood(W * (0.35 + Math.random() * 0.3), H * 0.3, 6)) onFeed({ source: 'button' });
   }
 
   const onKeyDown = event => {
+    notifyInteraction();
     if (event.code !== 'Space' && event.key !== ' ') return;
     event.preventDefault();
     feedRandom();
   };
-  canvas.addEventListener('keydown', onKeyDown);
+  canvas.addEventListener('keydown', onKeyDown, { signal: listenerController.signal });
 
   resize();
   start();
 
   return {
     setState, setNight, resize, feedRandom, spawnFood,
-    pause() { paused = true; stop(); },
-    resume() { paused = false; start(); },
+    setQualityPolicy,
+    setActivity,
+    notifyInteraction,
+    pause() { paused = true; setActivity({}); },
+    resume() { paused = false; setActivity({}); },
     dispose() {
+      if (disposed) return;
       disposed = true;
       stop();
-      canvas.removeEventListener('keydown', onKeyDown);
+      listenerController.abort();
+      renderPolicy.setActivity({ visible: false });
       agents.clear();
+      agentList.length = 0;
+      fishDrawList.length = 0;
+      decorDrawList.length = 0;
+      decorCache.clear();
+      pointerGestures.clear();
       foods.length = 0;
       ripples.length = 0;
     },
     get kind() { return '2d'; },
+    get performanceInfo() { return renderPolicy.performanceInfo; },
     get motionInfo() {
       return {foodCount:foods.length,fish:[...agents.values()].map(a=>({id:a.id,x:a.x,y:a.y,heading:a.angle,...uprightFishPose(a.angle)}))};
     }

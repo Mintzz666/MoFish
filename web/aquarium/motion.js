@@ -7,6 +7,15 @@ export function boundedDt(dt, maxStep = MAX_STEP) {
   return Math.min(dt, maxStep);
 }
 
+// Keep steering/damping on the same small simulation steps when drawing less
+// often. Visibility resume resets the clock; a stalled draw still has a bound.
+export function advanceMotion(dt, time, advance) {
+  const elapsed = boundedDt(dt, 0.25);
+  const steps = Math.max(1, Math.ceil(elapsed / MAX_STEP));
+  const step = elapsed / steps;
+  for (let i = 0; i < steps; i += 1) advance(step, time - elapsed + step * (i + 1));
+}
+
 export function angleDelta(from, to) {
   return Math.atan2(Math.sin(to - from), Math.cos(to - from));
 }

@@ -36,18 +36,37 @@ function shade(colorHex, factor) {
   return new THREE.Color(colorHex).multiplyScalar(factor);
 }
 
+// Keep deterministic fine-grid sampling, but collect directly into the final low-grid
+// occupancy map: no full high-grid array followed by a second downsample allocation.
+function voxelSink(targetVoxel) {
+  const low = targetVoxel !== HIGH_VOXEL;
+  const list = low ? null : [];
+  const map = low ? new Map() : null;
+  const ratio = HIGH_VOXEL / targetVoxel;
+  return {
+    push(v) {
+      if (!low) { list.push(v); return; }
+      const x=Math.round(v.x*ratio),y=Math.round(v.y*ratio),z=Math.round(v.z*ratio);
+      map.set(`${x},${y},${z}`, {x,y,z,color:v.color});
+    },
+    values() { return low ? [...map.values()] : list; }
+  };
+}
+
 // ------------------------------------------------------------------ 水草
 
-function plantVoxels(appearance) {
+function plantVoxels(appearance, targetVoxel = HIGH_VOXEL) {
   const { typeId, params, color, highlight, shade: dark } = appearance;
   const rnd = mulberry32(appearance.seed);
   const colorRnd = mulberry32((appearance.seed ^ 0xa511e9b3) >>> 0);
   const voxel = HIGH_VOXEL;
   const voxelMap = new Map();
+  const renderRatio = HIGH_VOXEL / targetVoxel;
   const H = Math.max(2, cellsForWorld(params.height || 0.6, voxel));
   const pick = (t) => (colorRnd() < t ? highlight : colorRnd() < 0.25 ? dark : color);
   const add = (x, y, z, voxelColor) => {
     const voxel = { x: Math.round(x), y: Math.max(0, Math.round(y)), z: Math.round(z), color: voxelColor };
+    voxel.x=Math.round(voxel.x*renderRatio); voxel.y=Math.round(voxel.y*renderRatio); voxel.z=Math.round(voxel.z*renderRatio);
     voxelMap.set([voxel.x, voxel.y, voxel.z].join(','), voxel);
   };
   const count = (value, minimum = 1) => {
@@ -257,11 +276,11 @@ function plantVoxels(appearance) {
 
 // ------------------------------------------------------------------ 石头
 
-function rockVoxels(appearance) {
+function rockVoxels(appearance, targetVoxel = HIGH_VOXEL) {
   const { shape, params, color, highlight, shade: dark } = appearance;
   const rnd = mulberry32(appearance.seed);
   const voxel = HIGH_VOXEL;
-  const voxels = [];
+  const voxels = voxelSink(targetVoxel);
   const size = params.size || 0.28;
   const rx = Math.max(2, Math.round(size / voxel / 2));
   const ry = Math.max(1, Math.round(rx * (shape === 'layered' ? 0.5 : shape === 'blocky' ? 0.85 : 0.72)));
@@ -287,16 +306,16 @@ function rockVoxels(appearance) {
       }
     }
   }
-  return { voxels, maxY: ry * 2 };
+  return { voxels: voxels.values(), maxY: ry * 2 };
 }
 
 // ------------------------------------------------------------------ 沉木
 
-function woodVoxels(appearance) {
+function woodVoxels(appearance, targetVoxel = HIGH_VOXEL) {
   const { typeId, params, color, highlight, shade: dark } = appearance;
   const rnd = mulberry32(appearance.seed);
   const voxel = HIGH_VOXEL;
-  const voxels = [];
+  const voxels = voxelSink(targetVoxel);
   const H = Math.max(3, cellsForWorld(params.height || 0.6, voxel));
   const baseCells = (cells, minimum = 1) => cellsAtBaseQuality(cells, voxel, minimum);
   const addBranch = (x0, y0, z0, len, dx, dy, dz, thick) => {
@@ -339,28 +358,17 @@ function woodVoxels(appearance) {
       }
     }
   }
-  const maxY = Math.max(1, ...voxels.map((v) => v.y));
-  return { voxels, maxY };
+  const rendered = voxels.values();
+  const maxY = Math.max(1, ...rendered.map((v) => v.y));
+  return { voxels: rendered, maxY };
 }
 
 // ------------------------------------------------------------------ 组装
 
-function downsampleVoxels(voxels, sourceVoxel, targetVoxel) {
-  const ratio = sourceVoxel / targetVoxel;
-  const sampled = new Map();
-  for (const voxel of voxels) {
-    const x = Math.round(voxel.x * ratio);
-    const y = Math.round(voxel.y * ratio);
-    const z = Math.round(voxel.z * ratio);
-    sampled.set(`${x},${y},${z}`, { ...voxel, x, y, z });
-  }
-  return [...sampled.values()];
-}
-
 export function buildPlantGeometry(appearance, quality = 'high') {
-  const source = plantVoxels(appearance);
   const voxel = voxelForQuality(quality);
-  const voxels = quality === 'low' ? downsampleVoxels(source.voxels, HIGH_VOXEL, voxel) : source.voxels;
+  const source = plantVoxels(appearance, voxel);
+  const voxels = source.voxels;
   const maxY = Math.max(1, ...voxels.map((v) => v.y));
   return meshVoxels(voxels, { x: 0, y: 0, z: 0 }, {
     voxel,
@@ -369,16 +377,16 @@ export function buildPlantGeometry(appearance, quality = 'high') {
 }
 
 export function buildRockGeometry(appearance, quality = 'high') {
-  const source = rockVoxels(appearance);
   const voxel = voxelForQuality(quality);
-  const voxels = quality === 'low' ? downsampleVoxels(source.voxels, HIGH_VOXEL, voxel) : source.voxels;
+  const source = rockVoxels(appearance, voxel);
+  const voxels = source.voxels;
   return meshVoxels(voxels, { x: 0, y: 0, z: 0 }, { voxel });
 }
 
 export function buildWoodGeometry(appearance, quality = 'high') {
-  const source = woodVoxels(appearance);
   const voxel = voxelForQuality(quality);
-  const voxels = quality === 'low' ? downsampleVoxels(source.voxels, HIGH_VOXEL, voxel) : source.voxels;
+  const source = woodVoxels(appearance, voxel);
+  const voxels = source.voxels;
   const maxY = Math.max(1, ...voxels.map((v) => v.y));
   return meshVoxels(voxels, { x: 0, y: 0, z: 0 }, {
     voxel,

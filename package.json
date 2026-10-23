@@ -1,6 +1,6 @@
 {
   "name": "mofish",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -20,7 +20,8 @@
     "release": "node scripts/release.mjs",
     "test:cloud:c": "node scripts/phase-c-cloud-smoke.mjs",
     "deploy:cloudflare:c": "node scripts/deploy-cloudflare.mjs --phase=c",
-    "test:e2e:c:real": "node --env-file=.env.phase-c tests/e2e/phase-c-real.mjs"
+    "test:e2e:c:real": "node --env-file=.env.phase-c tests/e2e/phase-c-real.mjs",
+    "test:performance": "node scripts/performance-check.mjs"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.10",

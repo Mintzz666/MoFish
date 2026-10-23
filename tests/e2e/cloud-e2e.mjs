@@ -86,6 +86,7 @@ async function connect(wsUrl, { pageDomains = true } = {}) {
       return page.evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return null;e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2,l:r.left,r:r.right,w:r.width,h:r.height};})()`);
     },
     async click(selector) {
+      await page.evaluate(`(()=>{let e=document.querySelector(${JSON.stringify(selector)});if(!e)return;for(let p=e.parentElement;p;p=p.parentElement)if(p.tagName==='DETAILS' && !(e.tagName==='SUMMARY' && e.parentElement===p))p.open=true;})()`);
       const b = await page.box(selector);
       if (!b) throw new Error('找不到元素: ' + selector);
       await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: b.x, y: b.y, button: 'left', clickCount: 1 });
@@ -137,6 +138,424 @@ async function waitFor(page, expression, { timeoutMs = 15000, intervalMs = 250 }
   return last;
 }
 
+async function dispatchWaterGesture(page, kind, pointerId = 71) {
+  return page.evaluate(`(()=>{
+    const canvas=document.getElementById('tank');
+    const rect=canvas.getBoundingClientRect();
+    let nx=0.88,ny=0.72;
+    if(window.__mofish.renderer==='2d'){
+      const fish=window.__mofish.motionInfo.fish;
+      const candidates=[[.12,.24],[.5,.18],[.88,.24],[.12,.72],[.88,.72],[.5,.8]];
+      candidates.sort((a,b)=>Math.min(...fish.map(f=>Math.hypot(f.x-a[0]*rect.width,f.y-a[1]*rect.height)))
+        -Math.min(...fish.map(f=>Math.hypot(f.x-b[0]*rect.width,f.y-b[1]*rect.height))));
+      [nx,ny]=candidates.at(-1);
+    }
+    const x=rect.left+rect.width*nx, y=rect.top+rect.height*ny;
+    const inheritedCapture=Object.hasOwn(canvas,'setPointerCapture');
+    const ownCapture=canvas.setPointerCapture;
+    canvas.setPointerCapture=()=>{};
+    const send=(type,px,py,buttons)=>canvas.dispatchEvent(new PointerEvent(type,{
+      pointerId:${pointerId},pointerType:'touch',isPrimary:true,button:0,buttons,
+      clientX:px,clientY:py,bubbles:true,cancelable:true
+    }));
+    try {
+      send('pointerdown',x,y,1);
+      if(${JSON.stringify(kind)}!=='tap') send('pointermove',x+36,y+24,1);
+      send(${JSON.stringify(kind)}==='cancel'?'pointercancel':'pointerup',
+        ${JSON.stringify(kind)}==='tap'?x:x+36,${JSON.stringify(kind)}==='tap'?y:y+24,0);
+    } finally {
+      if(inheritedCapture) canvas.setPointerCapture=ownCapture; else delete canvas.setPointerCapture;
+    }
+    return window.__mofish.motionInfo.foodCount;
+  })()`);
+}
+
+async function assertWaterDoesNotFeed(page, rendererLabel) {
+  for (const [kind, name] of [['tap','轻触'],['drag','拖动'],['cancel','pointercancel']]) {
+    const before = await page.evaluate('window.__mofish.motionInfo.foodCount');
+    const after = await dispatchWaterGesture(page, kind, 71 + ['tap','drag','cancel'].indexOf(kind));
+    check(`${rendererLabel} 水面${name}不投食`, after === before, `食物数=${before} → ${after}`);
+  }
+  const buttonBefore = await page.evaluate('window.__mofish.motionInfo.foodCount');
+  const buttonAfter = await page.evaluate(`(()=>{document.getElementById('feed').click();return window.__mofish.motionInfo.foodCount;})()`);
+  check(`${rendererLabel} 投食按钮仍会投食`, buttonAfter > buttonBefore, `食物数=${buttonBefore} → ${buttonAfter}`);
+  const spaceBefore = await page.evaluate('window.__mofish.motionInfo.foodCount');
+  const spaceAfter = await page.evaluate(`(()=>{const c=document.getElementById('tank');c.focus();c.dispatchEvent(new KeyboardEvent('keydown',{key:' ',code:'Space',bubbles:true,cancelable:true}));return window.__mofish.motionInfo.foodCount;})()`);
+  check(`${rendererLabel} 空格仍会投食`, spaceAfter > spaceBefore, `食物数=${spaceBefore} → ${spaceAfter}`);
+}
+
+async function sampleQualityPolicy(page, policy) {
+  await page.evaluate(`(()=>{const q=document.getElementById('quality');q.value=${JSON.stringify(policy)};q.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  await waitFor(page, `window.__mofish.quality === ${JSON.stringify(policy)}`);
+  let previous = null;
+  let sample = null;
+  let stable = false;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const framesBefore = await page.evaluate('window.__mofish.performanceInfo.frames');
+    await page.evaluate(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+    await waitFor(page, `window.__mofish.performanceInfo.frames >= ${framesBefore + 2}`, {timeoutMs:3000,intervalMs:50});
+    await sleep(100);
+    sample = await page.evaluate(`(()=>{
+      const r=window.__mofish.resourceInfo;
+      return {policy:window.__mofish.quality,sameCanvas:document.getElementById('tank')===window.__qualityCanvas,
+        resources:{geometries:r.geometries,textures:r.textures}};
+    })()`);
+    if (previous && JSON.stringify(previous) === JSON.stringify(sample.resources)) {
+      stable = true;
+      break;
+    }
+    previous = sample.resources;
+  }
+  return { ...sample, stable };
+}
+
+async function assertQualityResourceStability(page, screenshotPrefix = 'quality') {
+  await page.front();
+  await page.evaluate(`window.__qualityCanvas=document.getElementById('tank')`);
+  const firstQualityRound = {};
+  for (const policy of ['high','low','auto']) {
+    const sample = await sampleQualityPolicy(page, policy);
+    firstQualityRound[policy] = sample.resources;
+    const validResources = Number.isInteger(sample.resources.geometries) && sample.resources.geometries > 0
+      && Number.isInteger(sample.resources.textures) && sample.resources.textures >= 0;
+    check(`画质 ${policy} 首轮资源有效且 canvas 身份保持`, sample.policy === policy && sample.stable
+      && sample.sameCanvas && validResources, JSON.stringify(sample));
+    await page.shot(`${screenshotPrefix}-${policy}.png`);
+  }
+  const firstGeometryCounts = Object.values(firstQualityRound).map(resources => resources.geometries);
+  check('high、low、auto 各档几何资源数一致', firstGeometryCounts.length === 3
+    && firstGeometryCounts.every(count => Number.isInteger(count) && count > 0 && count === firstGeometryCounts[0]),
+    JSON.stringify(firstQualityRound));
+
+  for (const policy of ['high','low','auto']) {
+    const sample = await sampleQualityPolicy(page, policy);
+    const first = firstQualityRound[policy];
+    check(`画质 ${policy} 重复轮换后资源计数回到同档稳定值`, sample.policy === policy && sample.stable
+      && sample.sameCanvas && sample.resources.geometries === first.geometries && sample.resources.textures === first.textures,
+      `${JSON.stringify(first)} → ${JSON.stringify(sample)}`);
+  }
+  return firstQualityRound;
+}
+
+async function instrumentCanvasTransforms(page) {
+  await page.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `(()=>{
+      const audit={calls:{translate:0,rotate:0,scale:0},invalid:[]};
+      Object.defineProperty(window,'__mofishCanvasTransformAudit',{configurable:true,value:audit});
+      const proto=CanvasRenderingContext2D.prototype;
+      for(const name of ['translate','rotate','scale']){
+        const descriptor=Object.getOwnPropertyDescriptor(proto,name);
+        if(typeof descriptor?.value!=='function')continue;
+        const original=descriptor.value;
+        Object.defineProperty(proto,name,{...descriptor,value:function(...args){
+          if(this.canvas?.id==='tank'){
+            audit.calls[name]+=1;
+            if(args.some(value=>typeof value!=='number'||!Number.isFinite(value))){
+              audit.invalid.push({method:name,args:args.map(value=>String(value))});
+            }
+          }
+          return original.apply(this,args);
+        }});
+      }
+    })();`
+  });
+}
+
+async function assert2dFishPositions(page, label) {
+  const sample = await page.evaluate(`(()=>{
+    const canvas=document.getElementById('tank');
+    const rect=canvas.getBoundingClientRect();
+    const fish=window.__mofish.motionInfo.fish;
+    const audit=window.__mofishCanvasTransformAudit;
+    const bounds={left:18,right:rect.width-18,top:rect.height*.22,bottom:rect.height*.82};
+    return {renderer:window.__mofish.renderer,foodCount:window.__mofish.motionInfo.foodCount,
+      bounds,size:{width:rect.width,height:rect.height},fish,
+      audit:{calls:audit.calls,invalidCount:audit.invalid.length,invalid:audit.invalid.slice(0,4)}};
+  })()`);
+  const positionsFinite = sample.fish.length > 0
+    && sample.fish.every(fish => Number.isFinite(fish.x) && Number.isFinite(fish.y));
+  const withinWater = positionsFinite && sample.fish.every(fish => fish.x >= sample.bounds.left - 1
+    && fish.x <= sample.bounds.right + 1 && fish.y >= sample.bounds.top - 1 && fish.y <= sample.bounds.bottom + 1);
+  check(`${label} 2D 鱼位置有限并处于水层`, sample.renderer === '2d' && withinWater,
+    JSON.stringify({size:sample.size,bounds:sample.bounds,fish:sample.fish.map(({id,x,y})=>({id,x,y}))}));
+  check(`${label} Canvas 鱼变换没有非有限参数`, sample.renderer === '2d'
+    && sample.audit.invalidCount === 0
+    && ['translate','rotate','scale'].every(name => sample.audit.calls[name] > 0),
+    JSON.stringify(sample.audit));
+  return sample;
+}
+
+async function run2dCanvasRegression(page) {
+  await instrumentCanvasTransforms(page);
+  await page.setViewport(1440, 900, false);
+  await page.goto(preview.url + '/');
+  const ready = await waitFor(page, `(()=>window.__mofish?.renderer==='2d'
+    && window.__mofish.motionInfo.fish.length>0 && window.__mofish.performanceInfo.frames>=3)()`);
+  await sleep(180);
+  check('2D 专项启动时已使用 2D 且鱼已进入首帧', Boolean(ready));
+  const initial = await assert2dFishPositions(page, '未互动');
+  check('未互动投食数量为零', initial.foodCount === 0, `食物数=${initial.foodCount}`);
+  await page.shot('v02-2d-desktop-day.png');
+
+  const foodBeforeTap = await page.evaluate('window.__mofish.motionInfo.foodCount');
+  await dispatchWaterGesture(page, 'tap', 129);
+  await sleep(150);
+  const afterTap = await assert2dFishPositions(page, '轻触后');
+  check('2D 水面轻触只产生涟漪、不投食', afterTap.foodCount === foodBeforeTap,
+    `食物数=${foodBeforeTap} → ${afterTap.foodCount}`);
+  await page.shot('v02-2d-desktop-tap.png');
+
+  await page.click('#night');
+  await waitFor(page, 'window.__mofish.state.night === true');
+  await sleep(120);
+  const desktopNight = await assert2dFishPositions(page, '桌面夜间');
+  check('桌面夜间仍未生成投食', desktopNight.foodCount === foodBeforeTap);
+  await page.shot('v02-2d-desktop-night.png');
+
+  await page.setViewport(390, 844, true);
+  await page.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+  await sleep(150);
+  const mobileNight = await assert2dFishPositions(page, '390px 横竖屏调整后');
+  check('390px 调整后仍未生成投食', mobileNight.foodCount === foodBeforeTap);
+  check('390px 调整后保留夜间状态', await page.evaluate('window.__mofish.state.night === true'));
+  await page.shot('v02-2d-390-night.png');
+
+  await page.click('#night');
+  await waitFor(page, 'window.__mofish.state.night === false');
+  await sleep(120);
+  const mobileDay = await assert2dFishPositions(page, '390px 日间');
+  check('390px 日间仍未生成投食', mobileDay.foodCount === foodBeforeTap);
+  await page.shot('v02-2d-390-day.png');
+}
+
+async function aquariumViewportSnapshot(page) {
+  return page.evaluate(`(()=>{
+    const r=document.getElementById('aquarium').getBoundingClientRect();
+    const info=window.__mofish.performanceInfo;
+    return {active:info?.active??null,hidden:document.hidden,fullscreen:Boolean(document.fullscreenElement),
+      aquarium:{top:r.top,bottom:r.bottom,height:r.height},scrollY,scrollHeight:document.documentElement.scrollHeight,
+      documentScrollHeight:document.scrollHeight,
+      innerHeight,intersects:r.bottom>0&&r.top<innerHeight,frames:info?.frames??null};
+  })()`);
+}
+
+async function assertOffscreenPause(page) {
+  await page.front();
+  const before = await aquariumViewportSnapshot(page);
+  await page.evaluate(`(()=>{
+    const spacer=document.createElement('div');spacer.id='__e2e-scroll-spacer';
+    spacer.setAttribute('aria-hidden','true');spacer.style.cssText='display:block;height:1200px;width:1px;pointer-events:none';
+    document.body.append(spacer);
+  })()`);
+  let scrolled = null;
+  let pauseSample = null;
+  let later = null;
+  let resumed = null;
+  try {
+    await page.evaluate(`window.scrollTo(0,document.documentElement.scrollHeight)`);
+    const fullyOffscreen = await waitFor(page,
+      `(()=>document.getElementById('aquarium').getBoundingClientRect().bottom<0)()`,
+      { timeoutMs: 5000, intervalMs: 50 });
+    scrolled = await aquariumViewportSnapshot(page);
+    // Wait for the visibility observer and any in-flight frame to settle before measuring.
+    const paused = await waitFor(page, `(()=>{
+      const r=document.getElementById('aquarium').getBoundingClientRect();
+      const p=window.__mofish.performanceInfo;
+      return r.bottom<0 && p && !p.active ? 'paused' : null;
+    })()`, { timeoutMs: 3000, intervalMs: 50 });
+    pauseSample = await aquariumViewportSnapshot(page);
+    await sleep(650);
+    later = await aquariumViewportSnapshot(page);
+    const verifiedOffscreen = Boolean(fullyOffscreen) && scrolled.aquarium.bottom < 0
+      && pauseSample.aquarium.bottom < 0 && later.aquarium.bottom < 0
+      && !pauseSample.intersects && !later.intersects;
+    check('滚动夹具使鱼缸完全离开视口', verifiedOffscreen,
+      JSON.stringify({ before, scrolled, pauseSample, later }));
+    check('鱼缸完全离屏后停止渲染帧', verifiedOffscreen && paused === 'paused'
+      && pauseSample.active === false && later.active === false && later.frames === pauseSample.frames,
+      JSON.stringify({ before, scrolled, pauseSample, later }));
+
+    await page.evaluate(`window.scrollTo(0,0)`);
+    const active = await waitFor(page, `(()=>{
+      const r=document.getElementById('aquarium').getBoundingClientRect();
+      const p=window.__mofish.performanceInfo;
+      return r.bottom>0 && r.top<innerHeight && p?.active ? 'active' : null;
+    })()`, { timeoutMs: 5000, intervalMs: 50 });
+    await sleep(150);
+    resumed = await aquariumViewportSnapshot(page);
+    check('鱼缸回到视口后恢复渲染', active === 'active' && resumed.intersects
+      && resumed.active === true && resumed.frames > (later?.frames ?? -1),
+      JSON.stringify({ before, scrolled, pauseSample, later, resumed }));
+  } finally {
+    await page.evaluate(`(()=>{
+      document.getElementById('__e2e-scroll-spacer')?.remove();window.scrollTo(0,0);
+    })()`);
+  }
+}
+
+async function setRenderer(page, renderer) {
+  if (await page.evaluate('window.__mofish.renderer') === renderer) return;
+  await page.click('#toggle-2d');
+  await waitFor(page, `window.__mofish.renderer === ${JSON.stringify(renderer)}`);
+}
+
+async function setNight(page, night) {
+  if (await page.evaluate('window.__mofish.state.night') === night) return;
+  await page.click('#night');
+  await waitFor(page, `window.__mofish.state.night === ${JSON.stringify(night)}`);
+}
+
+async function diagnoseMoreMenuDismissal(page, width, height) {
+  await page.setViewport(width, height, true);
+  await page.evaluate(`(()=>{window.scrollTo(0,0);document.getElementById('more-settings').open=false;})()`);
+  await page.click('#more-button');
+  const opened = await page.evaluate(`(()=>{
+    const summary=document.getElementById('more-button'),panel=document.querySelector('.settings-panel');
+    const r=e=>{const b=e.getBoundingClientRect();return {left:b.left,right:b.right,top:b.top,bottom:b.bottom,width:b.width,height:b.height};};
+    const s=r(summary),p=r(panel),h=r(document.querySelector('.topbar'));
+    return {open:document.getElementById('more-settings').open,summary:s,panel:p,topbar:h,
+      overlaps:s.left<p.right&&s.right>p.left&&s.top<p.bottom&&s.bottom>p.top};
+  })()`);
+  const box = await page.box('#more-button');
+  const beforeClick = await page.evaluate(`(()=>{
+    const summary=document.getElementById('more-button'),panel=document.querySelector('.settings-panel');
+    const hit=document.elementFromPoint(${box.x},${box.y});
+    const r=e=>{const b=e.getBoundingClientRect();return {left:b.left,right:b.right,top:b.top,bottom:b.bottom,width:b.width,height:b.height};};
+    return {scrollY,summary:r(summary),panel:r(panel),hit:hit&&{id:hit.id,tag:hit.tagName,className:String(hit.className),isSummary:hit===summary,insideSummary:summary.contains(hit),insidePanel:panel.contains(hit)}};
+  })()`);
+  await page.shot(`menu-dismiss-${width}-open.png`);
+  await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', clickCount: 1 });
+  await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', clickCount: 1 });
+  await sleep(320);
+  const afterClick = await page.evaluate(`(()=>{
+    const summary=document.getElementById('more-button'),panel=document.querySelector('.settings-panel');
+    const hit=document.elementFromPoint(${box.x},${box.y});
+    const r=e=>{const b=e.getBoundingClientRect();return {left:b.left,right:b.right,top:b.top,bottom:b.bottom,width:b.width,height:b.height};};
+    return {open:document.getElementById('more-settings').open,scrollY,summary:r(summary),panel:r(panel),
+      hit:hit&&{id:hit.id,tag:hit.tagName,className:String(hit.className),isSummary:hit===summary,insideSummary:summary.contains(hit),insidePanel:panel.contains(hit)}};
+  })()`);
+  check(`${width}×${height} 更多菜单可通过 summary 收起`, afterClick.open === false,
+    JSON.stringify({opened,beforeClick,afterClick}));
+  await page.evaluate(`document.getElementById('more-settings').open=false`);
+}
+
+async function assertResponsiveMoreMenu(page, width, height) {
+  await page.setViewport(width, height, true);
+  await page.evaluate(`(()=>{window.scrollTo(0,0);document.getElementById('more-settings').open=false;})()`);
+  await page.click('#more-button');
+  const opened = await page.evaluate(`(()=>{
+    const summary=document.getElementById('more-button'),panel=document.querySelector('.settings-panel');
+    const s=summary.getBoundingClientRect(),p=panel.getBoundingClientRect();
+    return {open:document.getElementById('more-settings').open,scrollWidth:document.documentElement.scrollWidth,
+      innerWidth,summary:{left:s.left,right:s.right,top:s.top,bottom:s.bottom},
+      panel:{left:p.left,right:p.right,top:p.top,bottom:p.bottom,scrollHeight:panel.scrollHeight,clientHeight:panel.clientHeight},
+      overlaps:s.left<p.right&&s.right>p.left&&s.top<p.bottom&&s.bottom>p.top};
+  })()`);
+  check(`${width}×${height} 更多面板不遮住收起摘要`, opened.open && !opened.overlaps,
+    JSON.stringify(opened));
+  check(`${width}×${height} 更多面板无横向溢出`, opened.scrollWidth <= opened.innerWidth,
+    `scrollWidth=${opened.scrollWidth}, innerWidth=${opened.innerWidth}`);
+  const endState = await page.evaluate(`(()=>{
+    const panel=document.querySelector('.settings-panel'),last=document.getElementById('night');
+    panel.scrollTop=panel.scrollHeight;
+    const p=panel.getBoundingClientRect(),r=last.getBoundingClientRect();
+    return {scrollTop:panel.scrollTop,maxScroll:panel.scrollHeight-panel.clientHeight,
+      panel:{top:p.top,bottom:p.bottom,scrollHeight:panel.scrollHeight,clientHeight:panel.clientHeight},
+      last:{top:r.top,bottom:r.bottom,visible:last.getClientRects().length>0,
+        withinPanel:r.top>=p.top&&r.bottom<=p.bottom}};
+  })()`);
+  check(`${width}×${height} 滚动设置面板可到达夜间选项`, endState.last.visible && endState.last.withinPanel
+    && endState.scrollTop >= 0 && endState.maxScroll >= 0, JSON.stringify(endState));
+  if (height <= 430) {
+    check(`${width}×${height} 横屏菜单内容可内部滚动`, endState.maxScroll > 0
+      && endState.scrollTop === endState.maxScroll, JSON.stringify(endState));
+  }
+  await page.click('#more-button');
+  const closed = await page.evaluate(`!document.getElementById('more-settings').open`);
+  check(`${width}×${height} 同一摘要可以收起更多面板`, closed, JSON.stringify(opened));
+  await page.evaluate(`(()=>{document.getElementById('more-settings').open=false;window.scrollTo(0,0);})()`);
+  if (width === 390 && height === 844) await page.shot('v02-390-layout-final.png');
+}
+
+async function assertResponsiveLayout(page, name, width, height, mobile, renderer, night, captureShot = true) {
+  await page.setViewport(width, height, mobile);
+  await setRenderer(page, renderer);
+  await setNight(page, night);
+  await page.evaluate(`window.scrollTo(0,0)`);
+  await sleep(180);
+  const layout = await page.evaluate(`(()=>{
+    const summary=document.querySelector('#inspector > summary');
+    const more=document.getElementById('more-button');
+    const topbar=document.querySelector('.topbar').getBoundingClientRect();
+    const rect=e=>{const r=e.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height,
+      visible:e.getClientRects().length>0,inViewport:r.right>0&&r.left<innerWidth&&r.bottom>0&&r.top<innerHeight};};
+    const workspace=document.querySelector('.workspace');
+    const scene=document.querySelector('.scene-column');
+    const inspector=document.getElementById('inspector');
+    const aquarium=document.getElementById('aquarium');
+    const tank=document.getElementById('tank');
+    return {scrollWidth:document.documentElement.scrollWidth,innerWidth,
+      workspaceWidth:document.querySelector('.workspace').scrollWidth,
+      inspectorSummaryVisible:summary.getClientRects().length>0,
+      moreButtonVisible:more.getClientRects().length>0,
+      topbarRight:topbar.right,
+      desktop:{width:innerWidth,media1024:matchMedia('(min-width: 1024px)').matches,
+        workspace:rect(workspace),workspaceDisplay:getComputedStyle(workspace).display,
+        gridTemplateColumns:getComputedStyle(workspace).gridTemplateColumns,
+        scene:rect(scene),inspector:rect(inspector),inspectorParentClass:inspector.parentElement.className,
+        aquarium:rect(aquarium),tank:rect(tank)} };
+  })()`);
+  check(`${name} 无横向溢出`, layout.scrollWidth <= layout.innerWidth && layout.workspaceWidth <= layout.innerWidth,
+    JSON.stringify(layout));
+  if (!mobile && width >= 1024) {
+    const desktopLayoutCorrect = layout.desktop.media1024
+      && layout.desktop.scene.visible && layout.desktop.scene.inViewport && layout.desktop.scene.width > 0
+      && layout.desktop.aquarium.visible && layout.desktop.aquarium.inViewport && layout.desktop.aquarium.width > 0
+      && layout.desktop.tank.visible && layout.desktop.tank.inViewport && layout.desktop.tank.width > 0
+      && layout.desktop.inspector.visible && layout.desktop.inspector.inViewport && layout.desktop.inspector.width > 0
+      && layout.desktop.gridTemplateColumns.trim().split(/\s+/).length >= 2
+      && layout.desktop.inspector.left >= layout.desktop.scene.right - 1
+      && layout.desktop.inspector.right <= layout.desktop.workspace.right + 1
+      && layout.desktop.inspectorParentClass.includes('workspace');
+    check(`${name} 桌面布局中详情面板可见且位于鱼缸右侧`, desktopLayoutCorrect,
+      JSON.stringify(layout.desktop));
+  }
+  await page.evaluate(`(()=>{document.getElementById('inspector').open=false;document.getElementById('more-settings').open=false;})()`);
+  await page.click('#inspector > summary');
+  const inspectorReachable = await page.evaluate(`document.getElementById('inspector').open && document.querySelector('#inspector > summary').getClientRects().length>0`);
+  check(`${name} 选中详情摘要可达`, inspectorReachable);
+  await page.click('#more-button');
+  const settings = await page.evaluate(`(()=>{
+    const menu=document.getElementById('more-settings');
+    const ids=['storage-button','quality','toggle-2d','camera-reset','sound','night'];
+    const items=Object.fromEntries(ids.map(id=>{
+      const e=document.getElementById(id),r=e.getBoundingClientRect();
+      return [id,{visible:e.getClientRects().length>0,width:r.width,height:r.height}];
+    }));
+    const touchIds=['mode-view','mode-decor','play-mode','fullscreen','more-button','feed',...ids];
+    const touchTargets=Object.fromEntries(touchIds.map(id=>{
+      const e=document.getElementById(id),r=e.getBoundingClientRect();
+      return [id,{width:r.width,height:r.height}];
+    }));
+    return {open:menu.open,items,touchTargets};
+  })()`);
+  const settingsReachable = settings.open && Object.values(settings.items).every(item=>item.visible);
+  check(`${name} 更多菜单及设置项可达`, settingsReachable, JSON.stringify(settings.items));
+  if (mobile) {
+    const undersized = Object.entries(settings.touchTargets)
+      .filter(([,rect])=>rect.width < 44 || rect.height < 44)
+      .map(([id,rect])=>`${id}:${rect.width.toFixed(1)}x${rect.height.toFixed(1)}`);
+    check(`${name} 主要操作和设置控件至少 44px`, undersized.length === 0,
+      JSON.stringify({undersized,touchTargets:settings.touchTargets}));
+  }
+  await page.click('#more-button');
+  const settingsClosed = await page.evaluate(`!document.getElementById('more-settings').open`);
+  check(`${name} 更多菜单可以收起`, settingsClosed);
+  await page.evaluate(`document.getElementById('more-settings').open=false`);
+  await page.evaluate(`window.scrollTo(0,0)`);
+  if (captureShot) await page.shot(`v02-${name}.png`);
+}
+
 async function newContextPage(browserWs, label) {
   const { browserContextId } = await browserWs.send('Target.createBrowserContext', { disposeOnDetach: false });
   const { targetId } = await browserWs.send('Target.createTarget', { url: 'about:blank', browserContextId });
@@ -167,6 +586,10 @@ async function main() {
     env: { ...process.env, MOFISH_SUPABASE_URL: fakeServer.url, MOFISH_SUPABASE_ANON_KEY: ANON },
     stdio: 'pipe'
   });
+  const assetManifest = JSON.parse(readFileSync(path.join(repo, 'dist/asset-manifest.json'), 'utf8'));
+  const lazy3dAssets = assetManifest.lazy.filter(name => /\.js$/i.test(name)
+    && readFileSync(path.join(repo, 'dist', name), 'utf8').includes('WebGLRenderer'));
+  check('构建清单可识别延迟加载的 3D 资源', lazy3dAssets.length > 0, lazy3dAssets.join(', ') || '未识别到 WebGLRenderer chunk');
   preview = await startPreviewServer({ dir: 'dist', port: 0, allowConnect: [fakeServer.url] });
   console.log(`预览 ${preview.url} · 假后端 ${fakeServer.url} · _headers 规则 ${preview.rules.length} 条`);
 
@@ -206,6 +629,142 @@ async function main() {
   const deviceA = await newContextPage(browserWs, 'A');
   await deviceA.setViewport(1440, 900, false);
   await deviceA.goto(preview.url + '/');
+  await waitFor(deviceA, `window.__mofish?.renderer === '2d'`);
+  const initial3dRequests = deviceA.events.filter(e => e.method === 'Network.requestWillBeSent'
+    && lazy3dAssets.some(asset => e.params.request.url.endsWith('/' + asset)));
+  check('新建 2D 会话不会请求延迟 3D 文件', lazy3dAssets.length > 0 && initial3dRequests.length === 0,
+    initial3dRequests.map(e => e.params.request.url).join(', ') || `监测 ${lazy3dAssets.length} 个 3D 资源`);
+  check('顶栏显示 V0.2 测试版', (await deviceA.evaluate(`document.getElementById('app-version').textContent.trim()`)).includes('V0.2'));
+
+  // 快速专项模式用于单独诊断离屏暂停：滚动空间只存在于本测试页，绝不改产品布局。
+  if (process.env.MOFISH_E2E_OFFSCREEN_ONLY === '1') {
+    const pausePage = await newContextPage(browserWs, 'E');
+    await pausePage.setViewport(1440, 900, false);
+    await pausePage.goto(preview.url + '/');
+    await waitFor(pausePage, `window.__mofish?.renderer === '3d'`);
+    await sleep(400);
+    await assertOffscreenPause(pausePage);
+    const failed = results.filter(r => !r.ok);
+    console.log(`\n=== 离屏专项结果：${results.length - failed.length}/${results.length} 通过 ===`);
+    if (failed.length) for (const f of failed) console.log(` - ${f.name}${f.detail ? ` (${f.detail})` : ''}`);
+    writeFileSync(path.join(RUN_DIR, 'result.json'), JSON.stringify(results, null, 2));
+    return failed.length;
+  }
+  if (process.env.MOFISH_E2E_QUALITY_ONLY === '1') {
+    const qualityPage = await newContextPage(browserWs, 'E');
+    await qualityPage.setViewport(1440, 900, false);
+    await qualityPage.goto(preview.url + '/');
+    await waitFor(qualityPage, `window.__mofish?.renderer === '3d'`);
+    await waitFor(qualityPage, `window.__mofish.resourceInfo?.geometries > 0`);
+    await sleep(400);
+    await assertQualityResourceStability(qualityPage, 'v02-quality-only');
+    const failed = results.filter(r => !r.ok);
+    console.log(`\n=== 画质专项结果：${results.length - failed.length}/${results.length} 通过 ===`);
+    if (failed.length) for (const f of failed) console.log(` - ${f.name}${f.detail ? ` (${f.detail})` : ''}`);
+    writeFileSync(path.join(RUN_DIR, 'result.json'), JSON.stringify(results, null, 2));
+    return failed.length;
+  }
+  if (process.env.MOFISH_E2E_2D_ONLY === '1') {
+    const canvas2dPage = await newContextPage(browserWs, 'B');
+    await run2dCanvasRegression(canvas2dPage);
+    const failed = results.filter(r => !r.ok);
+    console.log(`\n=== 2D Canvas 专项结果：${results.length - failed.length}/${results.length} 通过 ===`);
+    if (failed.length) for (const f of failed) console.log(` - ${f.name}${f.detail ? ` (${f.detail})` : ''}`);
+    writeFileSync(path.join(RUN_DIR, 'result.json'), JSON.stringify(results, null, 2));
+    return failed.length;
+  }
+  if (process.env.MOFISH_E2E_MENU_CLOSE_DIAG_ONLY === '1') {
+    for (const [width,height] of [[390,844],[430,932]]) {
+      await diagnoseMoreMenuDismissal(deviceA,width,height);
+    }
+    const failed = results.filter(r => !r.ok);
+    console.log(`\n=== 更多菜单收起诊断：${results.length - failed.length}/${results.length} 通过 ===`);
+    if (failed.length) for (const f of failed) console.log(` - ${f.name}${f.detail ? ` (${f.detail})` : ''}`);
+    writeFileSync(path.join(RUN_DIR, 'result.json'), JSON.stringify(results, null, 2));
+    return failed.length;
+  }
+  if (process.env.MOFISH_E2E_MENU_LAYOUT_ONLY === '1') {
+    const layoutPage=deviceA;
+    await layoutPage.setViewport(1440,900,false);
+    await setRenderer(layoutPage,'3d');
+    await waitFor(layoutPage,`window.__mofish.resourceInfo?.geometries > 0`);
+    await assertResponsiveLayout(layoutPage,'desktop-1440-final',1440,900,false,'3d',false,true);
+    for (const [width,height] of [[320,568],[390,844],[430,932],[844,390]]) {
+      if (width === 390) {
+        await setRenderer(layoutPage,'3d');
+        await setNight(layoutPage,false);
+      }
+      await assertResponsiveMoreMenu(layoutPage,width,height);
+    }
+    const failed=results.filter(r=>!r.ok);
+    console.log(`\n=== V0.2 菜单布局专项：${results.length-failed.length}/${results.length} 通过 ===`);
+    if (failed.length) for (const f of failed) console.log(` - ${f.name}${f.detail ? ` (${f.detail})` : ''}`);
+    writeFileSync(path.join(RUN_DIR,'result.json'),JSON.stringify(results,null,2));
+    return failed.length;
+  }
+  if (process.env.MOFISH_E2E_CAPTURE390_ONLY === '1') {
+    const capturePage=deviceA;
+    await capturePage.setViewport(1440,900,false);
+    await setRenderer(capturePage,'3d');
+    await waitFor(capturePage,`window.__mofish.resourceInfo?.geometries > 0`);
+    await assertResponsiveLayout(capturePage,'desktop-1440-capture',1440,900,false,'3d',false,true);
+    for (const renderer of ['3d','2d']) {
+      await capturePage.setViewport(390,844,true);
+      await setRenderer(capturePage,renderer);
+      await setNight(capturePage,false);
+      const before=await capturePage.evaluate('window.__mofish.performanceInfo.frames');
+      await waitFor(capturePage,`window.__mofish.performanceInfo.frames > ${before}`,{timeoutMs:5000,intervalMs:100});
+      await sleep(500);
+      const renderState=await capturePage.evaluate(`(()=>({renderer:window.__mofish.renderer,
+        frames:window.__mofish.performanceInfo.frames,fish:window.__mofish.motionInfo.fish.length,
+        aquarium:(()=>{const r=document.getElementById('aquarium').getBoundingClientRect();return {top:r.top,bottom:r.bottom,width:r.width,height:r.height};})(),
+        canvas:(()=>{const r=document.getElementById('tank').getBoundingClientRect();return {width:r.width,height:r.height};})()}))()`);
+      check(`390px ${renderer} 截图前渲染状态有效`,renderState.renderer===renderer&&renderState.frames>before&&renderState.fish>0,
+        JSON.stringify(renderState));
+      await capturePage.evaluate(`(()=>{document.getElementById('more-settings').open=false;window.scrollTo(0,0);})()`);
+      await capturePage.shot(`v02-390-layout-final-${renderer}.png`);
+    }
+    const failed=results.filter(r=>!r.ok);
+    console.log(`\n=== V0.2 最终截图专项：${results.length-failed.length}/${results.length} 通过 ===`);
+    if (failed.length) for (const f of failed) console.log(` - ${f.name}${f.detail ? ` (${f.detail})` : ''}`);
+    writeFileSync(path.join(RUN_DIR,'result.json'),JSON.stringify(results,null,2));
+    return failed.length;
+  }
+  if (process.env.MOFISH_E2E_LAYOUT_ONLY === '1') {
+    const layoutPage = deviceA;
+    await layoutPage.setViewport(1440, 900, false);
+    await setRenderer(layoutPage, '3d');
+    await waitFor(layoutPage, `window.__mofish.resourceInfo?.geometries > 0`);
+    await sleep(300);
+    const scenarios = [];
+    for (const [width,height] of [[320,568],[390,844],[430,932],[844,390]]) {
+      for (const night of [false,true]) {
+        for (const renderer of ['3d','2d']) {
+          scenarios.push({name:`${width}-${height}-${night?'night':'day'}-${renderer}`,
+            width,height,mobile:true,renderer,night});
+        }
+      }
+    }
+    for (const width of [1024,1440]) {
+      for (const night of [false,true]) {
+        for (const renderer of ['3d','2d']) {
+          scenarios.push({name:`desktop-${width}-${night?'night':'day'}-${renderer}`,
+            width,height:900,mobile:false,renderer,night});
+        }
+      }
+    }
+    for (const scenario of scenarios) {
+      const captureShot = scenario.width === 390
+        || ([1024,1440].includes(scenario.width) && !scenario.night && scenario.renderer === '3d');
+      await assertResponsiveLayout(layoutPage, scenario.name, scenario.width, scenario.height,
+        scenario.mobile, scenario.renderer, scenario.night, captureShot);
+    }
+    const failed = results.filter(r => !r.ok);
+    console.log(`\n=== V0.2 布局专项结果：${results.length - failed.length}/${results.length} 通过，覆盖 ${scenarios.length} 种视口/主题/渲染组合 ===`);
+    if (failed.length) for (const f of failed) console.log(` - ${f.name}${f.detail ? ` (${f.detail})` : ''}`);
+    writeFileSync(path.join(RUN_DIR, 'result.json'), JSON.stringify(results, null, 2));
+    return failed.length;
+  }
 
   // ---- 场景 1：游客模式不发云请求 ----
   const guestChip = await deviceA.evaluate(`document.getElementById('cloud-status').textContent`);
@@ -524,15 +1083,16 @@ async function main() {
     `真实错误=${realErrors.slice(0, 3).join(' | ') || '无'}；网络噪声=${networkNoise.length} 条`);
 
   // ---- 场景 10：手机布局（含账号面板）----
-  for (const [name, w, h] of [['05-phone-390', 390, 844], ['06-phone-320', 320, 568]]) {
+  for (const [name, w, h] of [['05-phone-390', 390, 844], ['06-phone-320', 320, 568], ['07-phone-430', 430, 932], ['08-landscape-844', 844, 390]]) {
     await deviceC.setViewport(w, h, true);
     await deviceC.goto(preview.url + '/');
     await sleep(900);
     const layout = JSON.parse(await deviceC.evaluate(`JSON.stringify({scrollW:document.documentElement.scrollWidth,inner:innerWidth,chip:document.getElementById('cloud-status').textContent,headerRight:document.querySelector('.topbar-right').getBoundingClientRect().right})`));
     check(`${w}px 无横向溢出`, layout.scrollW <= layout.inner, JSON.stringify(layout));
     await deviceC.click('#account-button');
-    const dialogFits = JSON.parse(await deviceC.evaluate(`(()=>{const r=document.getElementById('account-dialog').getBoundingClientRect();return JSON.stringify({l:r.left,r:r.right,w:r.width,scrollW:document.documentElement.scrollWidth,inner:innerWidth,open:document.getElementById('account-dialog').open})})()`));
-    check(`${w}px 账号面板完整可见且不溢出`, dialogFits.open && dialogFits.l >= 0 && dialogFits.r <= dialogFits.inner, JSON.stringify(dialogFits));
+    const dialogFits = JSON.parse(await deviceC.evaluate(`(()=>{const r=document.getElementById('account-dialog').getBoundingClientRect();return JSON.stringify({l:r.left,r:r.right,t:r.top,b:r.bottom,w:r.width,scrollW:document.documentElement.scrollWidth,inner:innerWidth,innerH:innerHeight,open:document.getElementById('account-dialog').open})})()`));
+    check(`${w}×${h} 账号面板完整可见且不溢出`, dialogFits.open && dialogFits.l >= 0 && dialogFits.r <= dialogFits.inner
+      && dialogFits.t >= 0 && dialogFits.b <= dialogFits.innerH, JSON.stringify(dialogFits));
     await deviceC.shot(`${name}-account.png`);
     await deviceC.evaluate(`document.getElementById('account-dialog').close()`);
     await deviceC.shot(`${name}-tank.png`);
@@ -561,8 +1121,11 @@ async function main() {
   await waitFor(devicePhaseB, `window.__mofish.renderer === '3d'`);
   await sleep(400);
   check('阶段 B：存档为 v2', (await devicePhaseB.evaluate('window.__mofish?.version')) === 2);
+  check('阶段 B：持久鱼缸存档仍为版本 2', (await devicePhaseB.evaluate(`JSON.parse(localStorage.getItem('mofish.v1')).version`)) === 2);
+  check('阶段 B：顶栏显示 V0.2 测试版', (await devicePhaseB.evaluate(`document.getElementById('app-version').textContent.trim()`)).includes('V0.2'));
   check('默认观赏模式与选中标签一致', await devicePhaseB.evaluate(`window.__mofish.editMode === 'view' && document.getElementById('mode-view').getAttribute('aria-selected') === 'true'`));
   check('阶段 B：默认使用 3D 渲染', (await devicePhaseB.evaluate('window.__mofish?.renderer')) === '3d');
+  await assertWaterDoesNotFeed(devicePhaseB, '3D');
 
   const stageLabels = [];
   for (let i = 0; i < 4; i += 1) {
@@ -572,6 +1135,7 @@ async function main() {
   }
   check('四阶段在界面上可辨认', ['鱼苗期', '幼鱼期', '亚成年期', '成年期'].every((n, i) => stageLabels[i].includes(n)),
     stageLabels.join(' / '));
+  check('选鱼会展开右侧成长详情面板', await devicePhaseB.evaluate(`document.getElementById('inspector').open && !document.getElementById('fish-panel').hidden && !document.getElementById('fish-detail').hidden && document.getElementById('detail-type').textContent.includes('成年期')`));
 
   // 布景编辑：新增石头 → 转向 → 换造型 → 撤销 → 确认
   await devicePhaseB.click('#mode-decor');
@@ -607,7 +1171,7 @@ async function main() {
   await devicePhaseB.click('#add-rock');
   const floatCount = await devicePhaseB.evaluate('window.__mofish.state.decor.length');
   const floatRot0 = await devicePhaseB.evaluate('window.__mofish.state.decor.at(-1).rot');
-  await devicePhaseB.click('#decor-float [data-decor-action="rotate"]');
+  await devicePhaseB.click('#decor-rotate');
   const floatRot1 = await devicePhaseB.evaluate('window.__mofish.state.decor.at(-1).rot');
   check('浮动工具条可以转向', Math.abs(floatRot1 - floatRot0) > 0.01, `${floatRot0} → ${floatRot1}`);
   await devicePhaseB.click('#float-confirm');
@@ -619,6 +1183,18 @@ async function main() {
     `取消前=${floatCount + 1}，取消后=${floatAfterCancel}`);
   check('取消后待确认按钮不再残留', await devicePhaseB.evaluate('document.getElementById("float-cancel").hidden === true'));
   check('取消新物件后清除高亮', await devicePhaseB.evaluate(`!window.__mofish.selectionFeedback.visible && window.__mofish.selectionFeedback.id === null`));
+  const pickerSelection = await devicePhaseB.evaluate(`(()=>{
+    const target=window.__mofish.state.decor[0]?.id;
+    const picker=document.getElementById('decor-picker');
+    if(!target || ![...picker.options].some(option=>option.value===target)) return null;
+    picker.value=target;
+    picker.dispatchEvent(new Event('change',{bubbles:true}));
+    return {target,selected:window.__mofish.selectedDecor,highlight:window.__mofish.selectionFeedback.id,
+      visible:window.__mofish.selectionFeedback.visible,option:picker.value};
+  })()`);
+  check('造景选择器可选已有物件并正确高亮', Boolean(pickerSelection && pickerSelection.target === pickerSelection.selected
+    && pickerSelection.target === pickerSelection.highlight && pickerSelection.target === pickerSelection.option
+    && pickerSelection.visible), JSON.stringify(pickerSelection));
 
   await devicePhaseB.click('#add-rock');
   await devicePhaseB.click('#float-confirm');
@@ -653,7 +1229,7 @@ async function main() {
   // 放置取消/退出与纯动画互动的回归：不让临时物件通过撤销复活。
   await devicePhaseB.click('#add-rock');
   const canceledDecorId = await devicePhaseB.evaluate('window.__mofish.selectedDecor');
-  await devicePhaseB.click('#decor-float [data-decor-action="rotate"]');
+  await devicePhaseB.click('#decor-rotate');
   await devicePhaseB.click('#float-cancel');
   await devicePhaseB.click('#decor-undo');
   check('取消后撤销不会复活待放置物件', await devicePhaseB.evaluate(`!window.__mofish.state.decor.some(d=>d.id===${JSON.stringify(canceledDecorId)})`));
@@ -662,38 +1238,52 @@ async function main() {
   await devicePhaseB.click('#mode-view');
   check('离开布景会确认并保存当前位置', await devicePhaseB.evaluate(`window.__mofish.editMode==='view' && JSON.parse(localStorage.getItem('mofish.v1')).decor.some(d=>d.id===${JSON.stringify(retainedDecorId)})`));
   const beforePlay = await devicePhaseB.evaluate('JSON.stringify(window.__mofish.state.fish)');
+  const foodBeforePlay = await devicePhaseB.evaluate('window.__mofish.motionInfo.foodCount');
   await devicePhaseB.click('#play-mode');
   check('逗鱼按钮与实际互动模式同步', await devicePhaseB.evaluate(`window.__mofish.playMode && document.getElementById('play-mode').getAttribute('aria-pressed')==='true'`));
   const tankBox = await devicePhaseB.box('#tank');
   await devicePhaseB.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:tankBox.x,y:tankBox.y});
   await sleep(700);
   check('鼠标移动启动跟手互动', await devicePhaseB.evaluate('window.__mofish.motionInfo.lureActive'));
-  check('逗鱼不生成食物或修改鱼的持久状态', await devicePhaseB.evaluate(`window.__mofish.motionInfo.foodCount===0 && JSON.stringify(window.__mofish.state.fish)===${JSON.stringify(beforePlay)}`));
+  check('逗鱼不额外生成食物或修改鱼的持久状态', await devicePhaseB.evaluate(`window.__mofish.motionInfo.foodCount===${foodBeforePlay} && JSON.stringify(window.__mofish.state.fish)===${JSON.stringify(beforePlay)}`));
   await devicePhaseB.click('#mode-decor');
   check('进入布景会关闭逗鱼且恢复按钮状态', await devicePhaseB.evaluate(`!window.__mofish.playMode && document.getElementById('play-mode').getAttribute('aria-pressed')==='false'`));
   await devicePhaseB.click('#mode-view');
+  const aquariumBeforeSound = await devicePhaseB.evaluate(`JSON.stringify({state:window.__mofish.state,save:localStorage.getItem('mofish.v1')})`);
+  const cloudRequestsBeforeSound = devicePhaseB.events.filter(e => e.method === 'Network.requestWillBeSent'
+    && e.params.request.url.startsWith(fakeServer.url)).length;
   await devicePhaseB.click('#sound');
-  check('水声可由真实按钮点击启用',await devicePhaseB.evaluate(`window.__mofish.state.sound && document.getElementById('sound').getAttribute('aria-pressed')==='true'`));
+  check('水声可由真实按钮点击启用',await devicePhaseB.evaluate(`JSON.parse(localStorage.getItem('mofish.prefs')).sound && document.getElementById('sound').getAttribute('aria-pressed')==='true'`));
   await devicePhaseB.click('#sound');
-  check('关闭水声会恢复关闭状态',await devicePhaseB.evaluate(`!window.__mofish.state.sound && document.getElementById('sound').getAttribute('aria-pressed')==='false'`));
+  check('关闭水声会恢复关闭状态',await devicePhaseB.evaluate(`!JSON.parse(localStorage.getItem('mofish.prefs')).sound && document.getElementById('sound').getAttribute('aria-pressed')==='false'`));
+  const aquariumAfterSound = await devicePhaseB.evaluate(`JSON.stringify({state:window.__mofish.state,save:localStorage.getItem('mofish.v1')})`);
+  const cloudRequestsAfterSound = devicePhaseB.events.filter(e => e.method === 'Network.requestWillBeSent'
+    && e.params.request.url.startsWith(fakeServer.url)).length;
+  check('切换水声不改鱼缸状态或持久存档', aquariumAfterSound === aquariumBeforeSound);
+  check('切换水声不新增云请求', cloudRequestsAfterSound === cloudRequestsBeforeSound,
+    `请求数=${cloudRequestsBeforeSound} → ${cloudRequestsAfterSound}`);
 
   // 2D 降级与画质
   await devicePhaseB.click('#toggle-2d');
   await sleep(900);
   check('可以切到 2D 降级渲染', (await devicePhaseB.evaluate('window.__mofish?.renderer')) === '2d');
   check('2D 下布景编辑按钮被禁用（避免误操作）', await devicePhaseB.evaluate('document.getElementById("mode-decor").disabled'));
+  await assertWaterDoesNotFeed(devicePhaseB, '2D');
   await devicePhaseB.shot('07-2d-fallback.png');
   await devicePhaseB.click('#toggle-2d');
   await sleep(1200);
   check('可以切回 3D', (await devicePhaseB.evaluate('window.__mofish?.renderer')) === '3d');
-  await devicePhaseB.evaluate(`(()=>{const q=document.getElementById('quality');q.value='low';q.dispatchEvent(new Event('change'));return q.value;})()`);
-  await sleep(1600);
-  check('可以切到低画质且不报错', (await devicePhaseB.evaluate('window.__mofish?.quality')) === 'low');
-  await devicePhaseB.evaluate(`(()=>{const q=document.getElementById('quality');q.value='high';q.dispatchEvent(new Event('change'));return q.value;})()`);
-  await sleep(1600);
-
-  await devicePhaseB.evaluate(`(()=>{const q=document.getElementById('quality');q.value='low';q.dispatchEvent(new Event('change'));})()`);
-  await sleep(700);
+  await waitFor(devicePhaseB, `window.__mofish.resourceInfo?.geometries > 0`);
+  await assertQualityResourceStability(devicePhaseB, 'v02-quality');
+  await sleep(3250);
+  check('自动省电在交互结束 3 秒后回到 30 FPS',
+    (await devicePhaseB.evaluate('window.__mofish.performanceInfo.targetFps')) === 30);
+  await devicePhaseB.click('#mode-view');
+  const activeFps = await devicePhaseB.evaluate('window.__mofish.performanceInfo.targetFps');
+  check('自动省电交互期间升至 60 FPS', activeFps === 60, `目标=${activeFps}`);
+  await sleep(3250);
+  check('自动省电交互结束后再次回到 30 FPS',
+    (await devicePhaseB.evaluate('window.__mofish.performanceInfo.targetFps')) === 30);
 
   // 夜间
   await devicePhaseB.click('#night');
@@ -712,6 +1302,31 @@ async function main() {
   check('小鱼吃到食物后才记进食', mealsAfter > mealsBefore, `${mealsBefore} → ${mealsAfter}`);
   await devicePhaseB.shot('08-desktop-phase-b.png');
 
+  await assertOffscreenPause(devicePhaseB);
+
+  // 在三种窄屏宽度与桌面尺寸下检查日夜、2D/3D布局及两个折叠面板的可达性。
+  await devicePhaseB.evaluate(`(()=>{const q=document.getElementById('quality');q.value='low';q.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  const viewportScenarios = [];
+  for (const [width, height] of [[320,568],[390,844],[430,932]]) {
+    for (const night of [false,true]) {
+      for (const renderer of ['3d','2d']) {
+        viewportScenarios.push({name:`${width}-${night?'night':'day'}-${renderer}`,width,height,mobile:true,renderer,night});
+      }
+    }
+  }
+  for (const night of [false,true]) {
+    for (const renderer of ['3d','2d']) {
+      viewportScenarios.push({name:`desktop-${night?'night':'day'}-${renderer}`,width:1440,height:900,mobile:false,renderer,night});
+    }
+  }
+  for (const scenario of viewportScenarios) {
+    await assertResponsiveLayout(devicePhaseB, scenario.name, scenario.width, scenario.height,
+      scenario.mobile, scenario.renderer, scenario.night);
+  }
+  await devicePhaseB.setViewport(1440, 900, false);
+  await setRenderer(devicePhaseB, '3d');
+  await setNight(devicePhaseB, false);
+
   // 布景撤销只能影响造景，不能撤回后来的改名/成长，更不能跨身份恢复快照。
   await devicePhaseB.click('#add-rock');
   await devicePhaseB.click('#float-confirm');
@@ -720,6 +1335,7 @@ async function main() {
   await devicePhaseB.click('#detail-rename');
   await devicePhaseB.type('#fish-name', '撤销不改鱼名');
   await devicePhaseB.click('#rename');
+  await devicePhaseB.click('#mode-decor');
   await devicePhaseB.click('#decor-undo');
   check('布景撤销保留之后的鱼名和进食记录', await devicePhaseB.evaluate(`window.__mofish.state.fish[0].name === '撤销不改鱼名' && window.__mofish.state.fish.reduce((s,f)=>s+f.meals,0) >= ${mealsAfter}`));
 

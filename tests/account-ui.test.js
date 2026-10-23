@@ -71,7 +71,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function makeHarness({ syncNow = async () => {}, resolveConflict = async () => {}, backups = [] } = {}) {
+function makeHarness({ syncNow = async () => {}, resolveConflict = async () => {}, requestPasswordReset = async () => ({ ok: true }), backups = [] } = {}) {
   const doc = new FakeDocument();
   const snapshot = {
     user: { id: 'user-1', email: 'fish@example.test' },
@@ -109,7 +109,7 @@ function makeHarness({ syncNow = async () => {}, resolveConflict = async () => {
     listBackups: () => backups,
     forgetUser: () => 0
   };
-  const auth = { signOut: async () => ({ remoteOk: true }) };
+  const auth = { signOut: async () => ({ remoteOk: true }), requestPasswordReset };
   const ui = createAccountUI({
     auth,
     engine,
@@ -130,6 +130,22 @@ test('backup summaries describe v2 scenery and retain v1 plant counts', () => {
   h.ui.render();
   const details = h.el('backup-list').children.map(row => row.children[1].textContent);
   assert.deepEqual(details, ['1 条鱼 · 3 件造景', '1 条鱼 · 4 株水草']);
+});
+
+test('password reset notice confirms the request without claiming guaranteed email delivery', async () => {
+  let requestedEmail = '';
+  const h = makeHarness({ requestPasswordReset: async email => {
+    requestedEmail = email;
+    return { ok: true };
+  } });
+  h.el('auth-email').value = 'fish@example.test';
+
+  await h.el('auth-forgot').click();
+
+  assert.equal(requestedEmail, 'fish@example.test');
+  assert.equal(h.el('account-notice').textContent,
+    '请求已提交；如果该邮箱已在当前环境注册，系统会尝试发送重置密码邮件。请同时检查垃圾邮件。');
+  assert.equal(h.el('account-notice').dataset.kind, 'ok');
 });
 
 test('manual sync runs once while pending and leaves a failure notice on rejection', async () => {

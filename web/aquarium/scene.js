@@ -40,7 +40,7 @@ export const QUALITY = {
     decorDetail: 'high'
   },
   low: {
-    pixelRatio: 1.5,
+    pixelRatio: 1,
     shadows: false,
     shadowSize: 512,
     antialias: false,
@@ -258,20 +258,27 @@ function makeShaftMaterial() {
  * 建场景。返回的对象由 view3d 持有；dispose() 必须能释放全部 GPU 资源，
  * 因为用户可能在 2D/3D 之间反复切换（要求：切换后内存不能持续上涨）。
  */
-export function createTankScene({ canvas, quality = 'high', reduceMotion = false }) {
-  const settings = QUALITY[quality] || QUALITY.high;
+export function createTankScene({ canvas, quality = 'high', reduceMotion = false, effectsLevel, powerPreference = 'default' }) {
+  const geometryQuality = quality === 'low' ? 'low' : 'high';
+  const settings = QUALITY[geometryQuality];
+  let currentEffectsLevel = Number.isInteger(effectsLevel)
+    ? Math.max(0, Math.min(2, effectsLevel))
+    : geometryQuality === 'low' ? 0 : 2;
+  let rendererWidth = 0;
+  let rendererHeight = 0;
+  const pixelRatioCap = (level) => [1, 1.25, 2][level] ?? 2;
   const renderer = new THREE.WebGLRenderer({
     canvas,
     antialias: settings.antialias,
     alpha: false,
-    powerPreference: 'high-performance',
+    powerPreference,
     preserveDrawingBuffer: false
   });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, settings.pixelRatio));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, pixelRatioCap(currentEffectsLevel)));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = DAY.exposure;
-  renderer.shadowMap.enabled = settings.shadows;
+  renderer.shadowMap.enabled = currentEffectsLevel > 0;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   const scene = new THREE.Scene();
@@ -287,8 +294,8 @@ export function createTankScene({ canvas, quality = 'high', reduceMotion = false
 
   const key = new THREE.DirectionalLight(DAY.key.getHex(), 2.15);
   key.position.set(1.4, 6.2, 3.4);
-  key.castShadow = settings.shadows;
-  key.shadow.mapSize.set(settings.shadowSize, settings.shadowSize);
+  key.castShadow = currentEffectsLevel > 0;
+  key.shadow.mapSize.set(currentEffectsLevel === 2 ? 2048 : 1024, currentEffectsLevel === 2 ? 2048 : 1024);
   key.shadow.camera.left = -3.2;
   key.shadow.camera.right = 3.2;
   key.shadow.camera.top = 3.0;
@@ -346,19 +353,20 @@ export function createTankScene({ canvas, quality = 'high', reduceMotion = false
   const sand = new THREE.Mesh(sandGeo, new THREE.MeshStandardMaterial({
     vertexColors: true, roughness: 0.96, metalness: 0
   }));
-  sand.receiveShadow = settings.shadows;
+  sand.receiveShadow = currentEffectsLevel > 0;
   sand.position.set(0, TANK.sandY, 0);
   sand.userData.kind = 'sand';
   tankGroup.add(sand);
 
   // 沙面碎卵石：固定种子，刷新/切换画质都保持同一批（不进入存档，也不影响操作）
+  let pebbles = null;
   {
     let seed = 90210;
     const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
     const count = settings.caustics ? 46 : 22;
     const geo = new THREE.DodecahedronGeometry(0.028, 0);
     const mat = new THREE.MeshStandardMaterial({ color: '#b9ad90', roughness: 0.95, metalness: 0, flatShading: true, vertexColors: false });
-    const pebbles = new THREE.InstancedMesh(geo, mat, count);
+    pebbles = new THREE.InstancedMesh(geo, mat, count);
     const dummy = new THREE.Object3D();
     for (let i = 0; i < count; i += 1) {
       dummy.position.set((rnd() - 0.5) * TANK.width * 0.92, 0.03, (rnd() - 0.5) * TANK.depth * 0.9);
@@ -368,7 +376,7 @@ export function createTankScene({ canvas, quality = 'high', reduceMotion = false
       dummy.updateMatrix();
       pebbles.setMatrixAt(i, dummy.matrix);
     }
-    pebbles.receiveShadow = settings.shadows;
+    pebbles.receiveShadow = currentEffectsLevel > 0;
     pebbles.instanceMatrix.needsUpdate = true;
     tankGroup.add(pebbles);
   }
@@ -384,12 +392,13 @@ export function createTankScene({ canvas, quality = 'high', reduceMotion = false
 
   // 水下焦散：贴沙面的加色平面，用极轻的图案暗示光斑（不做昂贵流体）。
   let caustics = null;
-  if (settings.caustics) {
+  {
     const geo = new THREE.PlaneGeometry(TANK.width * 0.98, TANK.depth * 0.98, 1, 1);
     geo.rotateX(-Math.PI / 2);
     caustics = new THREE.Mesh(geo, makeCausticMaterial());
     caustics.position.set(0, TANK.sandY + 0.09, 0);
     caustics.renderOrder = 2;
+    caustics.visible = currentEffectsLevel > 0;
     tankGroup.add(caustics);
   }
 
@@ -397,7 +406,7 @@ export function createTankScene({ canvas, quality = 'high', reduceMotion = false
   const shafts = [];
   const shaftMats = [];
   const shaftPositions = new WeakMap();
-  const shaftCount = settings.caustics ? 3 : 0;
+  const shaftCount = 3;
   for (let i = 0; i < shaftCount; i += 1) {
     const mat = makeShaftMaterial();
     shaftMats.push(mat);
@@ -406,21 +415,23 @@ export function createTankScene({ canvas, quality = 'high', reduceMotion = false
     mesh.position.set(-1.1 + i * 1.05, TANK.height * 0.48, -0.25 + i * 0.12);
     mesh.rotation.z = 0.18 - i * 0.08;
     mesh.renderOrder = 4;
+    mesh.visible = currentEffectsLevel > 0;
     shaftPositions.set(mesh, { baseX: mesh.position.x, phase: i * 1.7 });
     shafts.push(mesh);
     tankGroup.add(mesh);
   }
 
-  const glassTank = createGlassTank(TANK, { quality });
+  const glassTank = createGlassTank(TANK, { quality: geometryQuality });
   const glass = glassTank.group;
   tankGroup.add(glass);
 
 
   // ---------------------------------------------------------------- 微粒
-  const moteCount = settings.motes;
-  const motePositions = new Float32Array(moteCount * 3);
-  const moteSeeds = new Float32Array(moteCount);
-  for (let i = 0; i < moteCount; i += 1) {
+  const moteCapacity = 140;
+  let activeMoteCount = currentEffectsLevel === 0 ? 46 : moteCapacity;
+  const motePositions = new Float32Array(moteCapacity * 3);
+  const moteSeeds = new Float32Array(moteCapacity);
+  for (let i = 0; i < moteCapacity; i += 1) {
     motePositions[i * 3] = (Math.random() - 0.5) * TANK.width * 0.94;
     motePositions[i * 3 + 1] = 0.15 + Math.random() * (TANK.height - 0.4);
     motePositions[i * 3 + 2] = (Math.random() - 0.5) * TANK.depth * 0.8;
@@ -428,6 +439,7 @@ export function createTankScene({ canvas, quality = 'high', reduceMotion = false
   }
   const moteGeo = new THREE.BufferGeometry();
   moteGeo.setAttribute('position', new THREE.Float32BufferAttribute(motePositions, 3));
+  moteGeo.setDrawRange(0, activeMoteCount);
   const moteMat = new THREE.PointsMaterial({
     color: '#eef7e6', size: 0.016, transparent: true, opacity: 0.5,
     depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true
@@ -483,6 +495,8 @@ export function createTankScene({ canvas, quality = 'high', reduceMotion = false
 
   function resize(width, height) {
     if (width < 2 || height < 2) return;
+    rendererWidth = Math.round(width);
+    rendererHeight = Math.round(height);
     camera.aspect = width / height;
     // Fit the nearest front rim, rather than a plane through the tank centre.
     // Otherwise portrait screens clip both glass corners despite fitting fish.
@@ -491,6 +505,29 @@ export function createTankScene({ canvas, quality = 'high', reduceMotion = false
     applyCamera();
     camera.updateProjectionMatrix();
     renderer.setSize(width, height, false);
+  }
+
+  function setEffectsLevel(level) {
+    const next = Math.max(0, Math.min(2, Math.round(level)));
+    if (next === currentEffectsLevel) return false;
+    currentEffectsLevel = next;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, pixelRatioCap(currentEffectsLevel)));
+    if (rendererWidth >= 2 && rendererHeight >= 2) renderer.setSize(rendererWidth, rendererHeight, false);
+    const shadows = currentEffectsLevel > 0;
+    renderer.shadowMap.enabled = shadows;
+    key.castShadow = shadows;
+    const shadowSize = currentEffectsLevel === 2 ? 2048 : 1024;
+    if (key.shadow.mapSize.x !== shadowSize) {
+      key.shadow.map?.dispose(); key.shadow.map = null;
+      key.shadow.mapSize.set(shadowSize,shadowSize);
+    }
+    sand.receiveShadow = shadows;
+    pebbles.receiveShadow = shadows;
+    caustics.visible = shadows;
+    shafts.forEach((mesh) => { mesh.visible = shadows; });
+    activeMoteCount = currentEffectsLevel === 0 ? 46 : moteCapacity;
+    moteGeo.setDrawRange(0, activeMoteCount);
+    return true;
   }
 
   function setNight(on) {
@@ -542,7 +579,7 @@ export function createTankScene({ canvas, quality = 'high', reduceMotion = false
     });
     // 微粒缓慢漂浮
     const pos = moteGeo.getAttribute('position');
-    for (let i = 0; i < moteCount; i += 1) {
+    for (let i = 0; i < activeMoteCount; i += 1) {
       const seed = moteSeeds[i];
       pos.setY(i, pos.getY(i) + dt * (0.018 + (i % 5) * 0.006));
       if (pos.getY(i) > TANK.height - 0.15) pos.setY(i, 0.12);
@@ -576,9 +613,10 @@ export function createTankScene({ canvas, quality = 'high', reduceMotion = false
     renderer, scene, camera, tankGroup, sand, glass, water, caustics,
     blobMaterial: blobMat, shadowTexture: shadowTex,
     settings, cameraState,
-    orbit, zoom, resetCamera, resize, update, setNight, dispose, addRipple,
+    orbit, zoom, resetCamera, resize, update, setNight, setEffectsLevel, dispose, addRipple,
     get elapsed() { return elapsed; },
-    get night() { return night; }
+    get night() { return night; },
+    get effectsLevel() { return currentEffectsLevel; }
   };
 }
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { angleDelta, clamp, damp, mixHeading, stepHeading, smoothstep } from '../web/aquarium/motion.js';
+import { advanceMotion, angleDelta, clamp, damp, mixHeading, stepHeading, smoothstep } from '../web/aquarium/motion.js';
 
 test('fish heading takes the short turn across the ±PI seam', () => {
   const heading = Math.PI - 0.1;
@@ -32,4 +32,20 @@ test('smoothstep keeps bounded, gradual play and greeting responses', () => {
   assert.equal(clamp(-2, -1, 1), -1);
   assert.equal(clamp(0.4, -1, 1), 0.4);
   assert.equal(clamp(2, -1, 1), 1);
+});
+
+test('a slow draw advances steering and damping by the same elapsed time as small draws', () => {
+  function simulate(frames) {
+    let heading=0,speed=0,time=0;
+    for(const dt of frames) {
+      time+=dt;
+      advanceMotion(dt,time,step=>{heading=stepHeading(heading,1,1,step);speed=damp(speed,1,3,step);});
+    }
+    return {heading,speed};
+  }
+  const slow=simulate([.25]),fast=simulate(Array(15).fill(1/60));
+  assert.ok(Math.abs(slow.heading-fast.heading)<1e-9);
+  assert.ok(Math.abs(slow.speed-fast.speed)<1e-9);
+  let elapsed=0;advanceMotion(10,10,step=>elapsed+=step);
+  assert.equal(elapsed,.25,'a resumed/stalled draw cannot run unbounded catch-up');
 });

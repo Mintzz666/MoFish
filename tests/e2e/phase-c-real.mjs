@@ -202,6 +202,7 @@ async function connect(wsUrl, { pageDomains = true } = {}) {
       return this.evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)return null;e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
     },
     async click(selector) {
+      await this.evaluate(`(()=>{let e=document.querySelector(${JSON.stringify(selector)});if(!e)return;for(let p=e.parentElement;p;p=p.parentElement)if(p.tagName==='DETAILS')p.open=true;})()`);
       await this.front();
       const point = await this.box(selector);
       if (!point) throw new Error(`missing_selector:${selector}`);

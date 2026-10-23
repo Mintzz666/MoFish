@@ -18,7 +18,11 @@ import { createCloudStack } from './cloud/client.js';
 import { createSyncEngine, STATUS } from './cloud/sync.js';
 import { parseAuthCallback } from './cloud/auth.js';
 import { createAccountUI } from './ui/account.js';
-import { createView3D } from './aquarium/view3d.js';
+// Three.js is downloaded only when 3D is actually requested.
+let createView3D = null;
+let rendererModulePromise = null;
+let rendererImportFailed = false;
+let rendererRetry = 0;
 import { createView2D } from './view2d.js';
 import { createDecorHistory } from './decor-history.js';
 import { createSharingApi } from './cloud/sharing-api.js';
@@ -27,6 +31,9 @@ import { createCollaborationRouter } from './cloud/collaboration-router.js';
 import { createSharingUI } from './ui/sharing.js';
 
 const $ = (id) => document.getElementById(id);
+const APP_VERSION = typeof __MOFISH_VERSION__ === 'string' ? __MOFISH_VERSION__ : '0.2.0';
+const SOURCE_SHA = typeof __MOFISH_SOURCE_SHA__ === 'string' ? __MOFISH_SOURCE_SHA__ : 'development';
+const BUILD_ENTRY = import.meta.url;
 const bootAt = typeof performance !== 'undefined' ? performance.now() : 0;
 let canvas = $('tank');
 const floatBar = $('decor-float');
@@ -47,7 +54,14 @@ function writePrefs(patch) {
 }
 const prefs = readPrefs();
 const isPhone = matchMedia('(max-width: 720px)').matches || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-let quality = prefs.quality === 'low' || prefs.quality === 'high' ? prefs.quality : (isPhone ? 'low' : 'high');
+let quality = ['auto','low','high'].includes(prefs.quality) ? prefs.quality : 'auto';
+let stageVisible = true;
+let rendererUsed3d = false;
+let rendererCacheRequestedFor = null;
+let updateRequested = false;
+let updateInProgress = false;
+let serviceWorkerRegistration = null;
+let updateAvailable = false;
 
 function supportsWebGL() {
   try {
@@ -86,6 +100,8 @@ let loadWarning = false;
 let viewMode = '3d';                 // '3d' | '2d'（渲染器）
 let editMode = 'view';               // 'view' | 'decor'（交互模式）
 let view = null;
+const fishCards = new Map();
+let decorPickerSignature = '';
 let activeFishId = null;
 let selectedDecorId = null;
 let pendingDecorId = null;
@@ -131,6 +147,7 @@ function createView(kind) {
   if (kind === '2d') {
     return createView2D({
       canvas,
+      quality,
       night: state.night,
       reduceMotion,
       canFeed: canEditAquarium,
@@ -160,9 +177,39 @@ function createView(kind) {
   });
 }
 
-function setRenderer(kind, { silent = false } = {}) {
+async function setRenderer(kind, { silent = false } = {}) {
   if (switchingRenderer || (kind === viewMode && view)) return;
   switchingRenderer = true;
+  $('toggle-2d').disabled = true;
+  $('retry-3d').disabled = true;
+  if (kind === '3d' && !createView3D) {
+    $('stage-status').textContent = '正在打开 3D…';
+    try {
+      rendererModulePromise ||= (async () => {
+        if (!rendererImportFailed) return import('./aquarium/view3d.js');
+        // Browsers remember a failed module fetch for the lifetime of a page.
+        // Retry the same build through a fresh module URL, preserving all state.
+        const response = await fetch('./asset-manifest.json',{cache:'no-cache'});
+        if (!response.ok) throw new Error('Renderer manifest unavailable');
+        const manifest = await response.json();
+        const file = manifest.lazy?.find(name => /^assets\/view3d-[\w-]+\.js$/.test(name));
+        if (!file || new URL(manifest.entry,location.href).href !== BUILD_ENTRY) {
+          const error = new Error('当前页面有新版本，请先完成同步并更新，再打开 3D。');
+          error.needsUpdate = true; throw error;
+        }
+        const moduleUrl = new URL(file,location.href);
+        moduleUrl.searchParams.set('retry',String(++rendererRetry));
+        return import(moduleUrl.href);
+      })();
+      createView3D = (await rendererModulePromise).createView3D;
+      rendererImportFailed = false;
+    } catch (error) {
+      rendererModulePromise = null;
+      rendererImportFailed = true;
+      kind = '2d';
+      toast(error.needsUpdate ? error.message : '3D 资源暂时未能加载，先用 2D 继续；联网后可以重试。');
+    }
+  }
   disposeView();
   replaceCanvas();
   viewMode = kind;
@@ -185,7 +232,27 @@ function setRenderer(kind, { silent = false } = {}) {
   applyEditMode(editMode === 'decor' && viewMode === '3d' ? 'decor' : 'view');
   if (selectedDecorId) view.selectDecor?.(selectedDecorId);
   switchingRenderer = false;
+  $('toggle-2d').disabled = false;
+  $('retry-3d').disabled = false;
+  $('stage-status').textContent = '自在游动中';
+  view?.setQualityPolicy?.(quality);
+  applyRuntimeActivity();
+  if (viewMode === '3d') { rendererUsed3d = true; cacheUsedRenderer(); }
 }
+
+function applyRuntimeActivity() {
+  const visible = !document.hidden && (stageVisible || Boolean(document.fullscreenElement));
+  if (view?.setActivity) view.setActivity({visible});
+  else if (visible) view?.resume?.(); else view?.pause?.();
+}
+function cacheUsedRenderer() {
+  const worker = serviceWorkerRegistration?.active;
+  if (rendererUsed3d && worker && rendererCacheRequestedFor !== worker) {
+    rendererCacheRequestedFor = worker;
+    worker.postMessage({type:'MOFISH_CACHE_3D'});
+  }
+}
+function markInteraction() { view?.notifyInteraction?.(); }
 
 /** 换一块新 canvas 重建 3D 视图：同一个 canvas 无法同时/重复申请 WebGL 上下文。 */
 function recreate3D() {
@@ -205,11 +272,11 @@ function updateRendererChrome() {
   $('retry-3d').hidden = !is2d;
   $('mode-decor').disabled = is2d;
   $('camera-reset').disabled = is2d;
-  $('quality').disabled = is2d;
+  $('quality').disabled = false; // Frame pacing and resolution apply to 2D too.
   $('play-mode').disabled = is2d;
   $('play-mode').title = is2d ? '逗鱼需要 3D 模式' : '让小鱼跟随手指或鼠标';
   $('play-mode').setAttribute('aria-pressed', String(Boolean(view?.playMode)));
-  canvas.setAttribute('aria-label', is2d ? '鱼缸：轻触水面或按空格投食，点鱼查看成长；布景和逗鱼请切回3D' : '鱼缸：观赏时轻触水面喂食、点鱼打招呼；布景时可拖动造景；按空格投食');
+  canvas.setAttribute('aria-label', is2d ? '鱼缸：轻触水面看涟漪，点鱼查看成长；喂一点按钮或空格投食，布景请切回3D' : '鱼缸：轻触水面打招呼，喂一点按钮或空格投食；布景时可拖动造景');
 }
 
 function applyEditMode(next) {
@@ -232,7 +299,7 @@ function applyEditMode(next) {
   $('decor-panel').classList.toggle('editing', next === 'decor');
   showTip(next === 'decor'
     ? '点选水草、石头或沉木；拖动换位置，松手即保存。'
-    : viewMode === '2d' ? '轻触水面喂食，点小鱼查看成长；布景和逗鱼请切回 3D。' : '轻触水面喂食，点小鱼打招呼；打开「逗鱼」可跟随手指或鼠标。');
+    : viewMode === '2d' ? '轻触水面看涟漪，点小鱼查看成长；用「喂一点」或空格投食。' : '轻触水面打招呼；用「喂一点」或空格投食，打开「逗鱼」让小鱼跟随。');
   refreshPanels();
 }
 
@@ -295,7 +362,7 @@ collaboration = createCollaborationRouter({legacy:legacyEngine, shared:sharedEng
   undoStack.clear(); selectedDecorId=null; pendingDecorId=null; activeFishId=null; applyEditMode('view');
 }});
 const engine = collaboration.engine;
-function canEditAquarium() { return !collaborationEnabled || engine.canEdit; }
+function canEditAquarium() { return !updateInProgress && (!collaborationEnabled || engine.canEdit); }
 function refreshSharedAccess() {
   if (!$('sharing-button')) return;
   $('sharing-button').hidden = !collaborationEnabled;
@@ -337,11 +404,13 @@ function applyState(next) {
 function persistLocal() {
   if (engine.isCloud) {
     const ok = engine.persistLocal();
+    if ($('persistence-warning')) $('persistence-warning').hidden = ok;
     if (ok) persistedCanonical = canonicalState(state);
     else $('save-status').textContent = '本机缓存暂不可用，请用导出备份';
     return ok;
   }
   const ok = store.writeGuest(state);
+  if ($('persistence-warning')) $('persistence-warning').hidden = ok;
   if (ok) persistedCanonical = canonicalState(state);
   return ok;
 }
@@ -408,6 +477,7 @@ function restoreFromUndo() {
 }
 
 function selectDecor(id) {
+  if ($('inspector')) $('inspector').open = true;
   if (!canEditAquarium()) return;
   if (pendingDecorId && pendingDecorId !== id) confirmPendingDecor();
   selectedDecorId = id;
@@ -545,7 +615,9 @@ function selectedFish() {
 }
 
 function selectFish(id) {
+  if (editMode === 'decor') applyEditMode('view');
   activeFishId = id;
+  if ($('inspector')) $('inspector').open = true;
   refreshPanels();
   refreshFishList();
 }
@@ -584,32 +656,44 @@ function refreshCounters() {
 
 function refreshFishList() {
   const list = $('fish-list');
-  list.replaceChildren();
   const now = Date.now();
-  state.fish.forEach((fish) => {
+  const keep = new Set();
+  let cursor = list.firstElementChild;
+  for (const fish of state.fish) {
+    keep.add(fish.id);
+    let record = fishCards.get(fish.id);
+    if (!record) {
+      const card = document.createElement('button');
+      card.type = 'button'; card.className = 'fish-card';
+      const art = document.createElement('span'); art.className = 'fish-card-art';
+      const name = document.createElement('b');
+      const detail = document.createElement('small');
+      const bar = document.createElement('div'); bar.className = 'growth';
+      const fill = document.createElement('i'); bar.append(fill);
+      card.append(art, name, detail, bar);
+      card.onclick = () => { selectFish(fish.id); view?.greetFish?.(fish.id); markInteraction(); };
+      record = {card,art,name,detail,fill,artKey:''};
+      fishCards.set(fish.id,record);
+    }
+    const {card,art,name,detail,fill} = record;
     const stage = describeStage(fish.growth);
-    const card = document.createElement('button');
-    card.type = 'button';
-    card.className = 'fish-card';
-    card.setAttribute('aria-current', String(fish.id === activeFishId));
-    card.innerHTML = fishSVG(fish);
-    const name = document.createElement('b');
-    name.textContent = fish.name;
-    const detail = document.createElement('small');
-    detail.textContent = `${stage.name} · ${Math.max(1, Math.floor(ageDays(fish.born, now)) + 1)} 天`;
-    const bar = document.createElement('div');
-    bar.className = 'growth';
-    const fill = document.createElement('i');
+    const artKey = JSON.stringify([fish.species,fish.seed,fish.growth]);
+    if (record.artKey !== artKey) { art.innerHTML = fishSVG(fish); record.artKey = artKey; }
+    if (name.textContent !== fish.name) name.textContent = fish.name;
+    const description = `${stage.name} · ${Math.max(1, Math.floor(ageDays(fish.born, now)) + 1)} 天`;
+    if (detail.textContent !== description) detail.textContent = description;
     fill.style.width = `${Math.max(3, fish.growth * 100)}%`;
-    bar.append(fill);
-    card.append(name, detail, bar);
+    card.setAttribute('aria-current',String(fish.id === activeFishId));
     card.setAttribute('aria-label', `查看 ${fish.name} 的信息`);
-    card.onclick = () => { selectFish(fish.id); view?.greetFish?.(fish.id); };
-    list.append(card);
-  });
+    if (card !== cursor) list.insertBefore(card,cursor);
+    cursor = card.nextElementSibling;
+  }
+  for (const [id,record] of fishCards) if (!keep.has(id)) { record.card.remove(); fishCards.delete(id); }
 }
 
 function refreshPanels() {
+  $('fish-panel').hidden = editMode === 'decor';
+  $('decor-panel').hidden = editMode !== 'decor';
   refreshFishPanel();
   refreshDecorPanel();
 }
@@ -645,6 +729,21 @@ function refreshFishPanel() {
 }
 
 function refreshDecorPanel() {
+  const picker = $('decor-picker');
+  if (picker) {
+    const signature = state.decor.map(d=>`${d.id}:${d.type}`).join('|');
+    if (signature !== decorPickerSignature) {
+      picker.replaceChildren(new Option('点选物件，或从这里选择',''));
+      for (const [i,d] of state.decor.entries()) {
+        const meta=KIND_META[d.kind];
+        const name=meta.types.find(t=>t.id===d.type)?.name || meta.name;
+        picker.add(new Option(`${name} · ${i+1}`, d.id));
+      }
+      decorPickerSignature=signature;
+    }
+    picker.value=selectedDecorId || '';
+    picker.disabled=!canEditAquarium() || viewMode==='2d';
+  }
   const item = state.decor.find((d) => d.id === selectedDecorId);
   const isPending = Boolean(item && item.id === pendingDecorId);
   $('decor-detail').hidden = !item;
@@ -693,7 +792,7 @@ async function setSound(on) {
   try {
     if (!on) {
       await audioCtx?.suspend();
-      state.sound = false;
+      writePrefs({sound:false});
     } else {
       if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -714,15 +813,14 @@ async function setSound(on) {
         gain.gain.value = 0.1;
         source.connect(filter).connect(gain).connect(audioCtx.destination);
         source.start();
-        audioNodes = [source];
+        audioNodes = [source, filter, gain];
       }
       await audioCtx.resume();
-      state.sound = true;
+      writePrefs({sound:true});
     }
-    save();
-    refreshAll();
+    $('sound').setAttribute('aria-pressed', String(on));
   } catch {
-    state.sound = false;
+    writePrefs({sound:false});
     toast('当前浏览器暂时无法播放水声。');
   }
 }
@@ -752,10 +850,11 @@ $('retry-3d').onclick = () => {
   setRenderer('3d');
 };
 $('quality').onchange = (event) => {
-  quality = event.target.value === 'low' ? 'low' : 'high';
+  quality = ['auto','low','high'].includes(event.target.value) ? event.target.value : 'auto';
   writePrefs({ quality });
-  recreate3D();
-  toast(quality === 'high' ? '已切到高画质（阴影与焦散）。' : '已切到低画质，优先保证流畅。');
+  view?.setQualityPolicy?.(quality);
+  markInteraction();
+  toast(({auto:'已启用自动省电，会按运行情况调整效果。',low:'已切到省电模式。',high:'已切到精致模式。'})[quality]);
 };
 $('mode-view').onclick = () => applyEditMode('view');
 $('play-mode').onclick = () => {
@@ -763,13 +862,14 @@ $('play-mode').onclick = () => {
   applyEditMode('view');
   const enabled = view?.setPlayMode?.(!view?.playMode);
   $('play-mode').setAttribute('aria-pressed', String(Boolean(enabled)));
-  showTip(enabled ? '移动鼠标或按住水面轻轻滑动，小鱼会慢慢跟过来。' : '轻触水面喂食，点小鱼打招呼。');
+  showTip(enabled ? '移动鼠标或按住水面轻轻滑动，小鱼会慢慢跟过来。' : '轻触水面打招呼，用「喂一点」或空格投食。');
 };
 $('mode-decor').onclick = () => {
   if (!canEditAquarium()) return;
   if (viewMode === '2d') { toast('布景编辑需要 3D 模式。'); return; }
   applyEditMode('decor');
 };
+$('decor-picker')?.addEventListener('change', event => { if (event.target.value && canEditAquarium()) selectDecor(event.target.value); });
 $('decor-rotate').onclick = () => rotateDecor();
 $('decor-scale-down').onclick = () => scaleDecor(-0.08);
 $('decor-scale-up').onclick = () => scaleDecor(0.08);
@@ -999,13 +1099,13 @@ setInterval(() => {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     save({ silent: true });
-    view?.pause?.();
+    applyRuntimeActivity();
     if (engine.isCloud) engine.flush({ reason: 'hidden', keepalive: true }).catch(() => {});
     mutedByVisibility = audioCtx?.state === 'running';
     if (mutedByVisibility) audioCtx.suspend();
   } else {
-    view?.resume?.();
-    if (engine.isCloud) engine.syncNow({ reason: 'visible' }).catch(() => {});
+    applyRuntimeActivity();
+    if (engine.isCloud) requestForegroundSync('visible');
     else {
       const hours = catchUp(state);
       if (hours > 0.02) { applyState(state); refreshAll(); }
@@ -1017,7 +1117,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 window.addEventListener('focus', () => {
-  if (!document.hidden && engine.isCloud) engine.syncNow({ reason: 'focus' }).catch(() => {});
+  if (!document.hidden && engine.isCloud) requestForegroundSync('focus');
 });
 window.addEventListener('pagehide', () => {
   if (engine.isCloud) {
@@ -1025,7 +1125,7 @@ window.addEventListener('pagehide', () => {
     engine.flush({ reason: 'pagehide', keepalive: true }).catch(() => {});
   } else save({ silent: true });
 });
-window.addEventListener('online', () => { engine.handleOnline(); refreshAll(); });
+window.addEventListener('online', () => { requestForegroundSync('online'); refreshAll(); });
 window.addEventListener('offline', () => { engine.handleOffline(); refreshAll(); });
 
 if ('ResizeObserver' in window) {
@@ -1033,13 +1133,107 @@ if ('ResizeObserver' in window) {
   resizeObserver.observe(canvas);
 }
 
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js').then(() => navigator.serviceWorker.ready)
-    .then(() => { $('offline-status').textContent = '离线资源已就绪：下次断网也可以打开鱼缸。'; })
-    .catch(() => { $('offline-status').textContent = '当前环境不支持离线缓存，请联网使用。'; });
-} else {
-  $('offline-status').textContent = '此浏览器不支持离线缓存，请联网使用。';
+// Coalesce visible/focus/online events from one foreground transition.
+let foregroundSyncTimer = null;
+function requestForegroundSync(reason) {
+  if (foregroundSyncTimer !== null) return;
+  foregroundSyncTimer = setTimeout(() => {
+    foregroundSyncTimer = null;
+    if (navigator.onLine === false || document.hidden || !engine.isCloud) return;
+    if (reason === 'online') engine.handleOnline();
+    else engine.syncNow({reason:'foreground'}).catch(() => {});
+  }, 200);
 }
+if ('IntersectionObserver' in window) {
+  const observer = new IntersectionObserver(entries => {
+    stageVisible = entries.some(entry => entry.isIntersecting);
+    applyRuntimeActivity();
+  }, {threshold:0.01});
+  observer.observe($('aquarium'));
+}
+$('aquarium').addEventListener('pointerdown', markInteraction, {passive:true});
+$('aquarium').addEventListener('pointermove', event => { if (event.buttons || view?.playMode) markInteraction(); }, {passive:true});
+$('aquarium').addEventListener('keydown', markInteraction);
+
+document.addEventListener('pointerdown', event => { const menu=$('more-settings'); if(menu?.open && !menu.contains(event.target)) menu.open=false; });
+document.addEventListener('keydown', event => { if(event.key==='Escape' && $('more-settings')?.open) { $('more-settings').open=false; $('more-button').focus(); event.preventDefault(); } });
+document.addEventListener('fullscreenchange', applyRuntimeActivity);
+
+function reportBuild() { (navigator.serviceWorker?.controller || serviceWorkerRegistration?.active)?.postMessage({type:'MOFISH_BUILD_STATUS',entry:BUILD_ENTRY}); }
+function showUpdate() {
+  updateAvailable = Boolean(serviceWorkerRegistration?.waiting);
+  if (!$('update-banner')) return;
+  $('update-banner').hidden = !updateAvailable;
+  $('update-copy').textContent = '有新的测试版本。当前改动保存后，可以更新。';
+}
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', event => {
+    if (event.data?.type === 'MOFISH_BUILD_QUERY') reportBuild();
+    if (event.data?.type === 'MOFISH_SHELL_CACHED') {
+      $('offline-status').textContent = event.data.entry === BUILD_ENTRY
+        ? '当前版本的离线 2D 资源已就绪；使用过的 3D 将另外缓存。'
+        : '离线缓存属于另一构建，请完成更新后再离线使用。';
+      if (event.data.entry === BUILD_ENTRY) cacheUsedRenderer();
+    }
+    if (event.data?.type === 'MOFISH_3D_CACHED' && event.data.entry === BUILD_ENTRY) $('offline-status').textContent = '2D 与已用过的 3D 资源均已就绪，可离线打开。';
+  });
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    reportBuild();
+    if (updateRequested) location.reload();
+  });
+  navigator.serviceWorker.register('./sw.js').then(async registration => {
+    serviceWorkerRegistration = registration;
+    showUpdate();
+    registration.addEventListener('updatefound', () => {
+      const worker = registration.installing;
+      worker?.addEventListener('statechange', () => { if (worker.state === 'installed') showUpdate(); });
+    });
+    await navigator.serviceWorker.ready;
+    $('offline-status').textContent = '正在核对当前版本的离线资源；首次准备需要联网。';
+    reportBuild(); cacheUsedRenderer();
+    registration.update().catch(() => {});
+  }).catch(() => { $('offline-status').textContent = '离线资源暂未就绪，请联网使用。'; });
+} else $('offline-status').textContent = '此浏览器不支持离线缓存，请联网使用。';
+$('update-button')?.addEventListener('click', async () => {
+  if (!serviceWorkerRegistration?.waiting || updateInProgress) return;
+  const generation = engine.generation;
+  const wasInert = document.body.inert;
+  const previousFocus = document.activeElement;
+  $('update-button').disabled = true;
+  try {
+    if (pendingDecorId) throw new Error('请先确认或取消当前造景，再更新版本。');
+    updateInProgress = true;
+    document.body.inert = true;
+    $('update-copy').textContent = '正在保存并核对当前鱼缸，请稍候…';
+    $('update-banner').setAttribute('aria-busy','true');
+    if (!persistLocal()) throw new Error('本机保存未完成，请先导出备份。');
+    if (engine.isCloud) await engine.flush({reason:'app-update'});
+    if (generation !== engine.generation) throw new Error('账号或鱼缸已变化，请确认当前内容后重新更新。');
+    const snap = engine.snapshot;
+    if (snap?.dirty || snap?.conflict || engine.isDirty || Number(engine.pendingFeeds || 0) > 0) throw new Error('还有未同步改动，请先完成同步或处理冲突后更新。');
+    updateRequested = true;
+    await new Promise((resolve,reject) => {
+      const changed = () => { clearTimeout(timer); resolve(); };
+      const timer = setTimeout(() => {
+        navigator.serviceWorker.removeEventListener('controllerchange',changed);
+        reject(new Error('更新尚未完成，请稍后重试；当前鱼缸继续保留。'));
+      },15000);
+      navigator.serviceWorker.addEventListener('controllerchange',changed,{once:true});
+      serviceWorkerRegistration.waiting.postMessage({type:'MOFISH_USE_UPDATE'});
+    });
+  } catch (error) { updateRequested = false; toast(error.message || '更新暂未完成，当前鱼缸继续保留。'); }
+  finally {
+    updateInProgress = false;
+    document.body.inert = wasInert;
+    $('update-button').disabled = false;
+    $('update-banner').removeAttribute('aria-busy');
+    showUpdate(); refreshAll();
+    if (!updateRequested && previousFocus?.isConnected) previousFocus.focus();
+  }
+});
+if ($('app-version')) { $('app-version').textContent = `V${APP_VERSION.replace(/\.0$/, '')} 测试版`; $('app-version').title = `${APP_VERSION} · ${SOURCE_SHA.slice(0,12)}`; }
+for (const note of document.querySelectorAll('[data-qa-note]')) note.hidden = !collaborationEnabled;
+if ($('inspector') && matchMedia('(min-width:1024px)').matches) $('inspector').open = true;
 
 // 供端到端测试与排障使用的只读探针（不暴露修改能力）。
 window.__mofish = {
@@ -1058,5 +1252,9 @@ window.__mofish = {
   get renderInfo() { return view?.rendererInfo || null; },
   get playMode() { return Boolean(view?.playMode); },
   get motionInfo() { return view?.motionInfo || null; },
-  get resourceInfo() { return view?.resourceInfo || null; }
+  get resourceInfo() { return view?.resourceInfo || null; },
+  get performanceInfo() { return view?.performanceInfo || null; },
+  get appVersion() { return APP_VERSION; },
+  get sourceSha() { return SOURCE_SHA; },
+  get updateAvailable() { return updateAvailable; }
 };
