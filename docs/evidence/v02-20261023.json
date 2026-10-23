@@ -1,0 +1,640 @@
+{
+  "date": "2026-10-23",
+  "version": "0.2.0",
+  "label": "V0.2 测试版",
+  "branch": "codex/v0.2-ux-performance",
+  "baselineSource": "9796313204aa4afe2b2042a2e3d338bb83bc6235",
+  "deployment": {
+    "url": "https://mofish-phase-c.tibo-reset-notifier.workers.dev/",
+    "worker": "mofish-phase-c",
+    "sourceSha": "6155e2f3e1e334f30e91a76314a19c354fa72d0d",
+    "buildId": "035684e53cee8e8d",
+    "cloudflareVersion": "2812cb3c-b2a6-450f-8972-1d471ae7a10b",
+    "checksPassed": 99,
+    "checksTotal": 99,
+    "versionAnnotationVerified": true,
+    "trafficPercent": 100,
+    "assets": [
+      {
+        "file": "style.css",
+        "bytes": 38423,
+        "sha256": "8c81ac76f8b11b5003c3b4bacb3ce216175e892711570befe87b85b96b0d2d87",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "app.js",
+        "bytes": 35,
+        "sha256": "517a642b709de20876f87e8f2ad486f734e94d25bcbddb6a3cda40843c92068a",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "sharing.css",
+        "bytes": 11035,
+        "sha256": "14ed52432cc96a8372ccb60547d34c8255289d5e3ced8d2ebe224ee7c0ff4804",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "index.html",
+        "bytes": 17847,
+        "sha256": "7510d281340f6456960290b71ca93026597d61440d978c64ed361cbb5472d6c4",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "deployment.json",
+        "bytes": 203,
+        "sha256": "e9be819064dfb5c6a6c02b4197058e483113483eb865104ac3adb5716ca4cda4",
+        "cache": "no-cache"
+      },
+      {
+        "file": "sw.js",
+        "bytes": 6268,
+        "sha256": "309adf5655f9ada60392c8955cefeb8824a445e33d413273e0db2cf870716738",
+        "cache": "no-cache"
+      },
+      {
+        "file": "asset-manifest.json",
+        "bytes": 1317,
+        "sha256": "dc6a67ae103284f3ede5a461d893c191f1a5e01466f2f34301e05e424d1a752b",
+        "cache": "no-cache"
+      },
+      {
+        "file": "config.js",
+        "bytes": 353,
+        "sha256": "f8e7c8e698b7a53c0e897c71a0a88c6ebb908266585b52e9c099fa462d65dacd",
+        "cache": "no-cache"
+      },
+      {
+        "file": "assets/style-8c81ac76f8b1.css",
+        "bytes": 38423,
+        "sha256": "8c81ac76f8b11b5003c3b4bacb3ce216175e892711570befe87b85b96b0d2d87",
+        "cache": "public, max-age=31536000, immutable"
+      },
+      {
+        "file": "manifest.webmanifest",
+        "bytes": 253,
+        "sha256": "9aea9a430cca5adce2730007b8bdc1885d703cf39dbdf6d72392e05d7d1b100e",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "icon.svg",
+        "bytes": 355,
+        "sha256": "3b2991764aae50b31851329a495ae09596a378d1366f7e820027591670313f52",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "THIRD-PARTY-NOTICES.txt",
+        "bytes": 5893,
+        "sha256": "84fdb5db8069ceb7d9a1b9c2866a36fb29d3b21743444559c8b8196afd384b9d",
+        "cache": "public, max-age=0, must-revalidate"
+      },
+      {
+        "file": "assets/sharing-14ed52432cc9.css",
+        "bytes": 11035,
+        "sha256": "14ed52432cc96a8372ccb60547d34c8255289d5e3ced8d2ebe224ee7c0ff4804",
+        "cache": "public, max-age=31536000, immutable"
+      },
+      {
+        "file": "assets/chunk-L2VJIBZU.js",
+        "bytes": 20880,
+        "sha256": "0bddf39d81bb32ed9031e1e6d4d11f7e6dd09ff4429b3768119cbef8cc95ad12",
+        "cache": "public, max-age=31536000, immutable"
+      },
+      {
+        "file": "assets/view3d-3ITCTCRZ.js",
+        "bytes": 554889,
+        "sha256": "eea455c578115091b5c6232c8ba3a2ce02393e079ff47edc3da1714ffee4ded3",
+        "cache": "public, max-age=31536000, immutable"
+      },
+      {
+        "file": "assets/app-L2PYYOWH.js",
+        "bytes": 322137,
+        "sha256": "e2359c6203cb0e400c1736a1614c9ffb4f0761771e4015c6b89ab754eacf27ad",
+        "cache": "public, max-age=31536000, immutable"
+      }
+    ]
+  },
+  "performance": {
+    "browser": "Chrome/155.0.8059.86",
+    "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver-5.0.0)",
+    "viewport": {
+      "width": 1440,
+      "height": 900,
+      "dpr": 1
+    },
+    "warmupSeconds": 10,
+    "sampleSeconds": 60,
+    "repeatsPerScene": 3,
+    "cpuMetric": "CDP TaskDuration ms per wall-clock second; page main-thread work, not total machine power",
+    "comparison": "Old default high versus V0.2 default auto; includes adaptive quality and reduced draw cadence, not an equal-quality/equal-FPS algorithm speedup",
+    "scenes": [
+      {
+        "scene": "default",
+        "baselineSamples": [
+          {
+            "id": "default-01",
+            "counts": {
+              "fish": 3,
+              "decor": {
+                "plant": 5,
+                "rock": 2,
+                "wood": 1
+              }
+            },
+            "seconds": 60.015924667,
+            "cpuWorkMsPerSecond": 995.1745819155608,
+            "rafP95Ms": 66.80000000000291,
+            "actualDrawHz": 15.629185173843753,
+            "heapMiB": 8.104167938232422,
+            "resources": {
+              "geometries": 53,
+              "textures": 5,
+              "drawCalls": 52,
+              "triangles": 20154
+            },
+            "requestCount": 6,
+            "javascriptResponseBytes": 884079,
+            "failedRequests": 0,
+            "consoleErrors": 0
+          },
+          {
+            "id": "default-02",
+            "counts": {
+              "fish": 3,
+              "decor": {
+                "plant": 5,
+                "rock": 2,
+                "wood": 1
+              }
+            },
+            "seconds": 60.005524667,
+            "cpuWorkMsPerSecond": 995.0744690351439,
+            "rafP95Ms": 66.70000000001164,
+            "actualDrawHz": 15.948531494572556,
+            "heapMiB": 7.970329284667969,
+            "resources": {
+              "geometries": 53,
+              "textures": 5,
+              "drawCalls": 52,
+              "triangles": 20154
+            },
+            "requestCount": 6,
+            "javascriptResponseBytes": 884079,
+            "failedRequests": 0,
+            "consoleErrors": 0
+          },
+          {
+            "id": "default-03",
+            "counts": {
+              "fish": 3,
+              "decor": {
+                "plant": 5,
+                "rock": 2,
+                "wood": 1
+              }
+            },
+            "seconds": 60.015978958,
+            "cpuWorkMsPerSecond": 995.1409712981108,
+            "rafP95Ms": 66.70000000001164,
+            "actualDrawHz": 15.995740079018308,
+            "heapMiB": 8.12710952758789,
+            "resources": {
+              "geometries": 53,
+              "textures": 5,
+              "drawCalls": 52,
+              "triangles": 20154
+            },
+            "requestCount": 6,
+            "javascriptResponseBytes": 884079,
+            "failedRequests": 0,
+            "consoleErrors": 0
+          }
+        ],
+        "candidateSamples": [
+          {
+            "id": "default-01",
+            "counts": {
+              "fish": 3,
+              "decor": {
+                "plant": 5,
+                "rock": 2,
+                "wood": 1
+              }
+            },
+            "seconds": 60.006322584,
+            "cpuWorkMsPerSecond": 151.98216266621557,
+            "rafP95Ms": 16.799999999999272,
+            "actualDrawHz": 3.9495838070769116,
+            "heapMiB": 5.503486633300781,
+            "resources": {
+              "geometries": 53,
+              "textures": 5,
+              "drawCalls": 48,
+              "triangles": 20146
+            },
+            "requestCount": 8,
+            "javascriptResponseBytes": 898259,
+            "failedRequests": 0,
+            "consoleErrors": 0
+          },
+          {
+            "id": "default-02",
+            "counts": {
+              "fish": 3,
+              "decor": {
+                "plant": 5,
+                "rock": 2,
+                "wood": 1
+              }
+            },
+            "seconds": 60.011463708,
+            "cpuWorkMsPerSecond": 229.03404020740777,
+            "rafP95Ms": 33.30000000000291,
+            "actualDrawHz": 6.165488677302101,
+            "heapMiB": 5.331295013427734,
+            "resources": {
+              "geometries": 53,
+              "textures": 5,
+              "drawCalls": 48,
+              "triangles": 20146
+            },
+            "requestCount": 8,
+            "javascriptResponseBytes": 898259,
+            "failedRequests": 0,
+            "consoleErrors": 0
+          },
+          {
+            "id": "default-03",
+            "counts": {
+              "fish": 3,
+              "decor": {
+                "plant": 5,
+                "rock": 2,
+                "wood": 1
+              }
+            },
+            "seconds": 60.026094709,
+            "cpuWorkMsPerSecond": 169.22168435945875,
+            "rafP95Ms": 16.80000000000291,
+            "actualDrawHz": 4.198174164447457,
+            "heapMiB": 5.109092712402344,
+            "resources": {
+              "geometries": 53,
+              "textures": 5,
+              "drawCalls": 48,
+              "triangles": 20146
+            },
+            "requestCount": 8,
+            "javascriptResponseBytes": 898259,
+            "failedRequests": 0,
+            "consoleErrors": 0
+          }
+        ],
+        "baselineCpuWorkMsPerSecond": 995.1300074162718,
+        "candidateCpuWorkMsPerSecond": 183.41262907769405,
+        "reductionPercent": 81.56897815252286,
+        "baselineMeanDrawHz": 15.85781891581154,
+        "candidateMeanDrawHz": 4.771082216275491
+      },
+      {
+        "scene": "full",
+        "baselineSamples": [
+          {
+            "id": "full-01",
+            "counts": {
+              "fish": 12,
+              "decor": {
+                "plant": 14,
+                "rock": 6,
+                "wood": 4
+              }
+            },
+            "seconds": 60.041987167,
+            "cpuWorkMsPerSecond": 994.3969375145882,
+            "rafP95Ms": 83.40000000000146,
+            "actualDrawHz": 13.240734317949826,
+            "heapMiB": 9.401397705078125,
+            "resources": {
+              "geometries": 96,
+              "textures": 5,
+              "drawCalls": 104,
+              "triangles": 51350
+            },
+            "requestCount": 6,
+            "javascriptResponseBytes": 884079,
+            "failedRequests": 0,
+            "consoleErrors": 0
+          },
+          {
+            "id": "full-02",
+            "counts": {
+              "fish": 12,
+              "decor": {
+                "plant": 14,
+                "rock": 6,
+                "wood": 4
+              }
+            },
+            "seconds": 60.071382166,
+            "cpuWorkMsPerSecond": 994.3840001490241,
+            "rafP95Ms": 83.40000000000146,
+            "actualDrawHz": 13.184314584462262,
+            "heapMiB": 9.074703216552734,
+            "resources": {
+              "geometries": 96,
+              "textures": 5,
+              "drawCalls": 104,
+              "triangles": 51350
+            },
+            "requestCount": 6,
+            "javascriptResponseBytes": 884079,
+            "failedRequests": 0,
+            "consoleErrors": 0
+          },
+          {
+            "id": "full-03",
+            "counts": {
+              "fish": 12,
+              "decor": {
+                "plant": 14,
+                "rock": 6,
+                "wood": 4
+              }
+            },
+            "seconds": 60.0222925,
+            "cpuWorkMsPerSecond": 994.3830756793197,
+            "rafP95Ms": 83.40000000000146,
+            "actualDrawHz": 13.061813658650243,
+            "heapMiB": 9.295696258544922,
+            "resources": {
+              "geometries": 96,
+              "textures": 5,
+              "drawCalls": 104,
+              "triangles": 51350
+            },
+            "requestCount": 6,
+            "javascriptResponseBytes": 884079,
+            "failedRequests": 0,
+            "consoleErrors": 0
+          }
+        ],
+        "candidateSamples": [
+          {
+            "id": "full-01",
+            "counts": {
+              "fish": 12,
+              "decor": {
+                "plant": 14,
+                "rock": 6,
+                "wood": 4
+              }
+            },
+            "seconds": 60.009915792,
+            "cpuWorkMsPerSecond": 137.13958402622646,
+            "rafP95Ms": 16.80000000000291,
+            "actualDrawHz": 2.7328816885602603,
+            "heapMiB": 5.962474822998047,
+            "resources": {
+              "geometries": 96,
+              "textures": 5,
+              "drawCalls": 100,
+              "triangles": 51342
+            },
+            "requestCount": 8,
+            "javascriptResponseBytes": 898259,
+            "failedRequests": 0,
+            "consoleErrors": 0
+          },
+          {
+            "id": "full-02",
+            "counts": {
+              "fish": 12,
+              "decor": {
+                "plant": 14,
+                "rock": 6,
+                "wood": 4
+              }
+            },
+            "seconds": 60.020989375,
+            "cpuWorkMsPerSecond": 178.9360776724232,
+            "rafP95Ms": 33.30000000000291,
+            "actualDrawHz": 3.7320277844886824,
+            "heapMiB": 6.4094390869140625,
+            "resources": {
+              "geometries": 96,
+              "textures": 5,
+              "drawCalls": 100,
+              "triangles": 51342
+            },
+            "requestCount": 8,
+            "javascriptResponseBytes": 898259,
+            "failedRequests": 0,
+            "consoleErrors": 0
+          },
+          {
+            "id": "full-03",
+            "counts": {
+              "fish": 12,
+              "decor": {
+                "plant": 14,
+                "rock": 6,
+                "wood": 4
+              }
+            },
+            "seconds": 60.002104375,
+            "cpuWorkMsPerSecond": 264.74105830132163,
+            "rafP95Ms": 33.40000000000873,
+            "actualDrawHz": 6.2331147198201915,
+            "heapMiB": 6.217700958251953,
+            "resources": {
+              "geometries": 96,
+              "textures": 5,
+              "drawCalls": 100,
+              "triangles": 51342
+            },
+            "requestCount": 8,
+            "javascriptResponseBytes": 898259,
+            "failedRequests": 0,
+            "consoleErrors": 0
+          }
+        ],
+        "baselineCpuWorkMsPerSecond": 994.388004447644,
+        "candidateCpuWorkMsPerSecond": 193.6055733333238,
+        "reductionPercent": 80.53017811283168,
+        "baselineMeanDrawHz": 13.162287520354111,
+        "candidateMeanDrawHz": 4.232674730956378
+      }
+    ],
+    "bundle": {
+      "sourceSha": "6155e2f3e1e334f30e91a76314a19c354fa72d0d",
+      "buildId": "035684e53cee8e8d",
+      "metric": "gzip each JS file separately; initial includes config; split-code excludes config/SW/bootstrap on both sides; all-JS includes these files",
+      "baseline": {
+        "app": {
+          "bytes": 883726,
+          "gzip": 240346
+        },
+        "allJS": {
+          "bytes": 886108,
+          "gzip": 241911
+        }
+      },
+      "candidate": {
+        "initial": {
+          "bytes": 343370,
+          "gzip": 100315
+        },
+        "split": {
+          "bytes": 897906,
+          "gzip": 246893
+        },
+        "allJS": {
+          "bytes": 904562,
+          "gzip": 249872
+        }
+      },
+      "initialPercent": 41.73774475131685,
+      "splitCodeGrowthPercent": 2.7239895816864035,
+      "allJsGrowthPercent": 3.290879703692684,
+      "targets": {
+        "initialAtMost60Percent": true,
+        "splitCodeGrowthAtMost5Percent": true,
+        "allJsGrowthAtMost5Percent": true
+      },
+      "canonicalCSS": {
+        "baselineGzip": 9664,
+        "candidateGzip": 11507
+      },
+      "allJSPlusCanonicalCSS": {
+        "baselineGzip": 251575,
+        "candidateGzip": 261379,
+        "growthPercent": 3.8970485938586874
+      }
+    },
+    "stability": {
+      "durationSeconds": 915.327427833,
+      "actions": {
+        "rendererQualityCycles": 20,
+        "decorReshuffles": 50,
+        "undoCount": 50
+      },
+      "heapNetMiB": 2.149852752685547,
+      "heapLimitMiB": 5,
+      "resources": {
+        "geometryBefore": 98,
+        "geometryAfter": 98,
+        "textureBefore": 5,
+        "textureAfter": 5,
+        "geometriesRecovered": true,
+        "texturesRecovered": true,
+        "drawCallsBefore": 100,
+        "drawCallsAfter": 100,
+        "trianglesBefore": 51342,
+        "trianglesAfter": 51342
+      },
+      "decorRestored": true
+    }
+  },
+  "tests": {
+    "strictNode24Postgres": {
+      "passed": 267,
+      "total": 267,
+      "skipped": 0
+    },
+    "fullBrowserFakeBackend": {
+      "passed": 189,
+      "total": 189
+    },
+    "finalMenuLayout": {
+      "passed": 25,
+      "total": 25
+    },
+    "finalLayoutScreenshots": {
+      "passed": 10,
+      "total": 10
+    },
+    "canvas2d": {
+      "passed": 20,
+      "total": 20
+    },
+    "qualityResources": {
+      "passed": 10,
+      "total": 10
+    },
+    "offscreen": {
+      "passed": 6,
+      "total": 6
+    },
+    "nativeDialogEscape": {
+      "passed": 6,
+      "total": 6
+    },
+    "stageTipAndTouchTarget": {
+      "passed": 35,
+      "total": 35
+    },
+    "versionUpgrade": {
+      "passed": 40,
+      "total": 40,
+      "includesLegacyV3": 7
+    },
+    "lazyDownloadRetry": {
+      "passed": 10,
+      "total": 10
+    },
+    "realQaHttpB": {
+      "passed": 64,
+      "total": 64
+    },
+    "realQaRpcRealtimeC": {
+      "passed": 31,
+      "total": 31
+    },
+    "realDualAccountBrowser": {
+      "passed": 25,
+      "total": 25,
+      "runs": 2
+    },
+    "liveDeployedBrowser": {
+      "passed": 19,
+      "total": 19
+    },
+    "productionAuditVulnerabilities": 0
+  },
+  "targets": {
+    "defaultCpuReductionAtLeast20Percent": true,
+    "initial2dAtMost60Percent": true,
+    "totalJavaScriptGrowthAtMost5Percent": true,
+    "stabilityPassed": true
+  },
+  "dataProtection": {
+    "newMigrations": 0,
+    "newBackendApis": 0,
+    "saveSchema": 2,
+    "temporaryQaIdentitiesCreated": 10,
+    "temporaryQaIdentitiesCleaned": 10,
+    "realUserSavesTouched": false,
+    "otherWorkerHistoriesUnchanged": [
+      "mofish",
+      "mofish-phase-b"
+    ],
+    "originalHermesWorktreePreserved": true
+  },
+  "cleanup": {
+    "performanceProfilesRemoved": true,
+    "taskBrowsersAndServersStopped": true,
+    "qaProjectAndCWorkerRetained": true,
+    "evidenceRetained": ".local/v02-20261023/"
+  },
+  "boundaries": {
+    "softwareRenderer": true,
+    "physicalGpuPerformance": false,
+    "physicalPhoneTemperatureBatteryTouch": false,
+    "audioListening": false,
+    "emailDelivery": false,
+    "nativeSafariV02": "not tested: Mac locked; no user intervention requested",
+    "userAcceptance": false,
+    "formalRelease": false,
+    "mainMerge": false,
+    "tag": false
+  }
+}
